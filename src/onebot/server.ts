@@ -31,6 +31,8 @@ export interface OneBotServerHandle {
   /** ws:// 地址（便于日志展示）。 */
   url: string;
   port: number;
+  /** 当前已连接的正向 WS 客户端数（隔离判定用）。 */
+  readonly clients: number;
   /** 广播事件到所有 WS 客户端与附加广播器。 */
   broadcast(event: unknown): Promise<void>;
   close(): Promise<void>;
@@ -134,6 +136,9 @@ export async function startOneBotServer(options: OneBotServerOptions): Promise<O
   return {
     url: `ws://127.0.0.1:${port}${conf.wsPath}`,
     port,
+    get clients(): number {
+      return clients.size;
+    },
     broadcast,
     async close(): Promise<void> {
       if (heartbeat !== undefined) clearInterval(heartbeat);

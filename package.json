@@ -5,9 +5,24 @@
   "description": "NOA Ark — QQ official bot platform to OneBot v11 / Milky adapter",
   "type": "module",
   "main": "./dist/cli.js",
+  "exports": {
+    ".": "./dist/cli.js",
+    "./dsh": "./dist/dsh/plugin.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg",
+    "./dsh/locale/*.json": "./locale/*.json",
+    "./dsh/icon": "./icon.svg"
+  },
   "bin": {
     "noa-ark": "./bin/noa.mjs"
   },
+  "files": [
+    "dist",
+    "bin",
+    "cordis.patch.yml",
+    "locale",
+    "icon.svg"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
@@ -19,6 +34,12 @@
   "engines": {
     "node": ">=20.3.0"
   },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "icon": "./icon.svg",
   "dependencies": {
     "ws": "^8.18.0"
   },

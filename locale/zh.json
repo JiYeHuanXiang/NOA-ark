@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "NOA 方舟 OneBot 桥",
+    "description": "接管 dsh 中已安装的 dsh-qqbot QQ 连接，对外提供 OneBot v11 正向/反向 WebSocket，并在 dsh 与 OneBot 客户端之间做回复隔离。"
+  }
+}

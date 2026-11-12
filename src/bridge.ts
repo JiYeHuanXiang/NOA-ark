@@ -533,27 +533,41 @@ export async function startBridge(options: BridgeOptions): Promise<BridgeHandle>
       dispatch: (action, params, echo) => onebotRouter.dispatch(action, params, echo),
       accessToken: config.onebot.accessToken === '' ? undefined : config.onebot.accessToken,
     });
-    onebot = await startOneBotServer({
-      conf: config.onebot,
-      logger,
-      selfId: selfIdValue,
-      now,
-      dispatch: (action, params, echo) => onebotRouter.dispatch(action, params, echo),
-      extraBroadcasters: [
-        (event) => {
-          reverse?.broadcast(event);
-        },
-      ],
-    });
+    try {
+      onebot = await startOneBotServer({
+        conf: config.onebot,
+        logger,
+        selfId: selfIdValue,
+        now,
+        dispatch: (action, params, echo) => onebotRouter.dispatch(action, params, echo),
+        extraBroadcasters: [
+          (event) => {
+            reverse?.broadcast(event);
+          },
+        ],
+      });
+    } catch (err) {
+      reverse.close();
+      reverse = undefined;
+      throw err;
+    }
   }
 
   if (config.milky.enable) {
-    milky = await startMilkyServer({
-      conf: config.milky,
-      logger,
-      dispatch: (api, params) => milkyRouter.dispatch(api, params),
-      now,
-    });
+    try {
+      milky = await startMilkyServer({
+        conf: config.milky,
+        logger,
+        dispatch: (api, params) => milkyRouter.dispatch(api, params),
+        now,
+      });
+    } catch (err) {
+      await onebot?.close();
+      reverse?.close();
+      onebot = undefined;
+      reverse = undefined;
+      throw err;
+    }
   }
 
   function emitOneBot(event: unknown): void {

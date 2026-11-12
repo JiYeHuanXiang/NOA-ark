@@ -5,6 +5,7 @@
 - 全量能力清单与逐条映射：见 **[文档](文档)**
 - 动作/事件/错误码使用手册：见 **[docs/USER-MANUAL.md](docs/USER-MANUAL.md)**
 - 标准协议外的扩展调用协议：见 **[文档](文档)**（`noa/1`，默认关闭）
+- dsh 插件（接管 dsh-qqbot + OneBot 正/反向 WS）：见 **[文档](文档)**
 - 设计红线：只使用官方开放平台能力；**不做** QQ 客户端协议逆向、不模拟客户端登录、不碰非官方通道。
 - 平台无能力或本适配器未接线的动作（好友列表、管理员任免、群名片、头衔、匿名、改群名、合并转发、json/xml 卡片……）一律以标准失败明确拒绝，绝不静默成功。
 
@@ -31,6 +32,25 @@ npm start            # 等价于 node bin/noa.mjs start
 | Milky v1.3 | `http://127.0.0.1:7792/api/:api` + `/event`（SSE / WS） |
 
 鉴权：`Authorization: Bearer <accessToken>` 或 `?access_token=`；token 为空表示不鉴权（仅限本机）。
+
+## dsh 插件（接管 dsh-qqbot）
+
+本仓库同时是一个 dsh 组合包。安装到 dsh profile 后，它不另开 QQ 连接，而是旁路
+`@tencent-connect/dsh-qqbot` 正在使用的 QQBot 实例：入站消息在中间件之前从
+`handleInboundMessage` 取出，非消息事件从 `rawEvent` 取出，统一转成 OneBot v11 事件；
+OneBot 动作 → 官方 REST，并对外提供正向/反向 WS。
+
+默认 `takeover.isolation: auto`：**有 OneBot 客户端在线时，dsh-qqbot 暂停处理入站消息**
+（连斜杠命令和 typing 一起暂停），避免 dsh 与外接 OneBot 程序同时回复；客户端全部
+断开后 dsh 自动恢复。
+
+```bash
+npm run build
+dsh plugin --profile desktop add link:E:\114\noa-ark
+# 重启 dsh（Desktop：~/.dsh/plugins/restart-dsh.cmd）
+```
+
+完整安装、配置、隔离语义与排障见 **[文档](文档)**。
 
 ## 配置
 
@@ -117,7 +137,7 @@ npm run typecheck
 npm run build
 ```
 
-测试覆盖：CQ 码 ⇄ 段数组往返、伪号映射持久化、被动窗口状态机、主动配额、动作三档路由、官方事件 → v11 事件映射（含新式 `<@openid>` / `mentions.is_you` 判定与 `at_me`/`to_me`）、`msg_elements`/ark 卡片文本降级、按 `msg_id` 去重、富媒体上传端点与 `msg_type=7`/引用 `message_reference`、出站段转换（@ 标签 / 回复提取 / 显式拒绝）、intents `4014` 回退、官方群信息合并、群成员白名单接口与分页、媒体缓存下载/命中/超限、`message_sent`、WS 鉴权与回包（HTTP 请求返回 426）、Milky `/api` 与 SSE、noa/1 段转换与组合校验、互动事件映射、noa_* 动作门控与流式生命周期、以及 **mock 官方网关 → 反向 WS 旧程序 → send_group_msg → mock REST（带 msg_id + msg_seq）** 的端到端链路。
+测试覆盖：CQ 码 ⇄ 段数组往返、伪号映射持久化、被动窗口状态机、主动配额、动作三档路由、官方事件 → v11 事件映射（含新式 `<@openid>` / `mentions.is_you` 判定与 `at_me`/`to_me`）、`msg_elements`/ark 卡片文本降级、按 `msg_id` 去重、富媒体上传端点与 `msg_type=7`/引用 `message_reference`、出站段转换（@ 标签 / 回复提取 / 显式拒绝）、intents `4014` 回退、官方群信息合并、群成员白名单接口与分页、媒体缓存下载/命中/超限、`message_sent`、WS 鉴权与回包（HTTP 请求返回 426）、Milky `/api` 与 SSE、noa/1 段转换与组合校验、互动事件映射、noa_* 动作门控与流式生命周期、dsh 接管（handleInboundMessage 前置旁路 / rawEvent 非消息事件 / interaction 转发 / 凭据捕获 / 多 sink 卸载 / 入站隔离短路）、dsh 运行时（合成网关 → OneBot 事件 → 动作 → 官方 REST 被动回复）、插件配置归一化与 dsh-qqbot 启用检测，以及 **mock 官方网关 → 反向 WS 旧程序 → send_group_msg → mock REST（带 msg_id + msg_seq）** 的端到端链路。
 
 ## 目录
 
@@ -144,9 +164,15 @@ src/
   milky/server.ts        /api/:api + /event（SSE/WS）
   bridge.ts              事件 fan-out + 发送实现（被动窗/配额）
   cli.ts                  start / doctor
+  dsh/takeover.ts         dsh 内旁路 QQBot（handleInboundMessage / emit / 凭据捕获）
+  dsh/plugin.ts           dsh 组合包入口（配置合并 / 隔离判定 / 桥生命周期）
+cordis.patch.yml         dsh 组合包默认配置（插入 noa-ark 行）
+locale/{zh,en}.json      dsh 插件管理器显示元数据
+icon.svg                 dsh 插件图标
 文档           双协议映射总文档
 docs/USER-MANUAL.md      动作/事件/错误码使用手册
 文档          标准协议外的 noa/1 扩展调用协议
+文档       dsh 插件：接管 dsh-qqbot 与 OneBot 正/反向 WS
 ```
 
 ## 下期（见 文档 §9 与 文档 §9）
