@@ -1,0 +1,16 @@
+{
+  "idMode": "mapped",
+  "passiveOverflow": "fail",
+  "onebot": {
+    "enable": true,
+    "accessToken": "",
+    "wsPort": 7791,
+    "wsPath": "/ws",
+    "reverseUrls": []
+  },
+  "milky": {
+    "enable": false,
+    "port": 7792,
+    "accessToken": ""
+  }
+}
