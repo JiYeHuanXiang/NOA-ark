@@ -521,6 +521,111 @@ export function needsRichMedia(segments: readonly AnyOneBotSegment[]): boolean {
   return segments.some((segment) => RICH_MEDIA_TYPES.has(segment.type));
 }
 
+/** 出站消息的一个有序分片；官方一条消息只能承载一种内容，故按段拆成多条发送。 */
+export type OutboundPart =
+  | { kind: 'text'; text: string }
+  | { kind: 'media'; mediaType: 'image' | 'record' | 'video'; file: string };
+
+export interface OfficialOutboundOptions {
+  /** 消息场景；群聊与单聊的 @ 能力不同。 */
+  scope: 'group' | 'c2c';
+}
+
+export type OfficialOutboundResult =
+  | { ok: true; parts: OutboundPart[]; replyId: string }
+  | { ok: false; reason: string };
+
+const MEDIA_TYPE_BY_SEGMENT: Record<string, 'image' | 'record' | 'video'> = {
+  image: 'image',
+  record: 'record',
+  video: 'video',
+};
+
+/**
+ * OneBot 段数组 → 官方出站分片（文本 / 单条富媒体）。
+ *
+ * - text 合并为文本分片；群聊 `at(qq=all)` → `<qqbot-at-everyone />`（管理员、每群每天 1 次）；
+ * - 群聊 @具体成员官方只支持 markdown 消息，标准文本通道无法真 @ → 明确失败（等 noa_markdown）；
+ * - reply 只提取引用目标（replyId），由调用方解析 REFIDX；
+ * - image/record/video 各成一个 media 分片（官方 msg_type=7 单条只带一个 file_info）；
+ * - face 在群聊/单聊无官方能力，明确失败；
+ * - noa_* 扩展段尚未启用（规划见 文档），同样明确失败。
+ */
+export function segmentsToOfficialParts(
+  segments: readonly AnyOneBotSegment[],
+  options: OfficialOutboundOptions,
+): OfficialOutboundResult {
+  const parts: OutboundPart[] = [];
+  let replyId = '';
+
+  const pushText = (text: string): void => {
+    if (text === '') return;
+    const last = parts[parts.length - 1];
+    if (last !== undefined && last.kind === 'text') {
+      last.text += text;
+      return;
+    }
+    parts.push({ kind: 'text', text });
+  };
+
+  for (const segment of segments) {
+    switch (segment.type) {
+      case 'text':
+        pushText(readString(segment.data, 'text'));
+        break;
+      case 'at': {
+        const qq = readString(segment.data, 'qq');
+        if (qq === '') {
+          return { ok: false, reason: 'at 段缺少 qq 目标' };
+        }
+        if (qq === 'all' || qq === 'everyone') {
+          if (options.scope !== 'group') {
+            return { ok: false, reason: '官方单聊不支持 @ 能力（@全体成员仅在群聊可用）' };
+          }
+          pushText('<qqbot-at-everyone />');
+          break;
+        }
+        return {
+          ok: false,
+          reason: '官方群聊的 @用户 仅支持 markdown 消息（noa_markdown 尚未实现）；单聊不支持 @。请先发纯文本，或等待 文档 B1',
+        };
+      }
+      case 'reply': {
+        const id = readString(segment.data, 'id');
+        if (replyId === '' && id !== '') replyId = id;
+        break;
+      }
+      case 'mention_all':
+        if (options.scope !== 'group') {
+          return { ok: false, reason: '官方单聊不支持 @ 能力（@全体成员仅在群聊可用）' };
+        }
+        pushText('<qqbot-at-everyone />');
+        break;
+      case 'face':
+        return { ok: false, reason: '官方群聊/单聊不支持发送系统表情（<emoji:id> 仅文字子频道可用）' };
+      case 'image':
+      case 'record':
+      case 'video': {
+        const file = oneBotMediaUri(segment.data);
+        if (file === '') {
+          return { ok: false, reason: `消息段「${segment.type}」缺少 file/url` };
+        }
+        parts.push({ kind: 'media', mediaType: MEDIA_TYPE_BY_SEGMENT[segment.type]!, file });
+        break;
+      }
+      case 'noa_markdown':
+      case 'noa_keyboard':
+      case 'noa_ark':
+      case 'noa_embed':
+        return { ok: false, reason: `noa 扩展消息段「${segment.type}」尚未启用（规范见 文档）` };
+      default:
+        return { ok: false, reason: `消息段「${segment.type}」无法经 QQ 官方平台发送（无对应能力）` };
+    }
+  }
+
+  return { ok: true, parts, replyId };
+}
+
 /**
  * OneBot v11 段 → Milky v1.3 段。
  *

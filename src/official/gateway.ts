@@ -35,7 +35,12 @@ export const CLOSE_CODES = {
   SESSION_TIMEOUT: 4009,
 } as const;
 
-const FATAL_CLOSE_CODES = new Set<number>([CLOSE_CODES.AUTH_FAILED, CLOSE_CODES.SESSION_TIMEOUT]);
+const FATAL_CLOSE_CODES = new Set<number>([
+  CLOSE_CODES.AUTH_FAILED,
+  CLOSE_CODES.SESSION_TIMEOUT,
+  4013, // 无效的 intent
+  4014, // intent 无权限
+]);
 
 const OP_DISPATCH = 0;
 const OP_HEARTBEAT = 1;
@@ -66,7 +71,10 @@ export interface GatewayOptions {
   fetchImpl?: typeof fetch;
   /** 断线重连的最小延迟（测试可置 0）。 */
   reconnectDelayMs?: number;
-  /** intents；默认群/单聊事件位 1<<25。 */
+  /**
+   * 显式 intents。省略时使用 DEFAULT_INTENTS（1<<25 | 1<<24），
+   * 若平台以 4013/4014 拒绝则自动回退到 1<<25 并重连。
+   */
   intents?: number;
 }
 
@@ -80,7 +88,10 @@ export interface GatewayHandle {
   onEvent(handler: (event: OfficialEventEnvelope) => void): void;
 }
 
-const DEFAULT_INTENTS = 1 << 25; // GROUP_AND_C2C_EVENT
+/** 默认订阅：GROUP_AND_C2C_EVENT（1<<25）+ GROUP_MEMBER（1<<24）。 */
+export const DEFAULT_INTENTS = (1 << 25) | (1 << 24);
+/** 群成员事件无权限时的回退订阅（仅群/单聊消息事件）。 */
+export const FALLBACK_INTENTS = 1 << 25;
 
 export function connectGateway(options: GatewayOptions): GatewayHandle {
   const { logger } = options;
@@ -95,6 +106,9 @@ export function connectGateway(options: GatewayOptions): GatewayHandle {
   let heartbeatIntervalMs = 30_000;
   const handlers = new Set<(event: OfficialEventEnvelope) => void>();
   if (options.onEvent) handlers.add(options.onEvent);
+  // 只有「未显式配置」时才允许因 4013/4014 回退，避免掩盖配置错误。
+  const intentFallback = options.intents === undefined ? FALLBACK_INTENTS : undefined;
+  let currentIntents = options.intents ?? DEFAULT_INTENTS;
 
   let settleReady: (() => void) | undefined;
   let failReady: ((error: Error) => void) | undefined;
@@ -164,7 +178,15 @@ export function connectGateway(options: GatewayOptions): GatewayHandle {
         const code = typeof event.code === 'number' ? event.code : 0;
         logger.warn(`网关断开（code=${code}${event.reason ? ` ${redact(event.reason)}` : ''}）`);
         online = false;
-        if (FATAL_CLOSE_CODES.has(code)) {
+        const intentRejected = code === 4013 || code === 4014;
+        if (intentRejected && intentFallback !== undefined && currentIntents !== intentFallback) {
+          logger.warn(
+            `网关拒绝 intents=${currentIntents}（code=${code}），回退为 ${intentFallback}（不再订阅群成员事件）`,
+          );
+          currentIntents = intentFallback;
+          sessionId = undefined;
+          lastSeq = undefined;
+        } else if (FATAL_CLOSE_CODES.has(code)) {
           sessionId = undefined;
           lastSeq = undefined;
         }
@@ -233,7 +255,7 @@ export function connectGateway(options: GatewayOptions): GatewayHandle {
               op: OP_IDENTIFY,
               d: {
                 token: `QQBot ${lastTokenForResume}`,
-                intents: options.intents ?? DEFAULT_INTENTS,
+                intents: currentIntents,
                 shard: [0, 1],
                 properties: {
                   $os: process.platform,

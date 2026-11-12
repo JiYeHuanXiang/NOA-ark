@@ -35,6 +35,10 @@ export interface NoaConfig {
   dataDir: string;
   idMode: IdMode;
   passiveOverflow: PassiveOverflow;
+  /**
+   * 网关 intents 覆盖值；0 = 自动（1<<25 | 1<<24，平台拒绝时回退 1<<25）。
+   */
+  intents: number;
   /** Per-peer daily proactive cap (local estimate; platform verdict wins). */
   dailyLimitPerPeer: number;
   /** Per-peer proactive messages per minute. */
@@ -54,6 +58,7 @@ export const DEFAULT_CONFIG: NoaConfig = {
   dataDir: '',
   idMode: 'mapped',
   passiveOverflow: 'fail',
+  intents: 0,
   dailyLimitPerPeer: 1000,
   perMinuteLimit: 20,
   botQpsLimit: 5,
@@ -106,6 +111,9 @@ export function validateConfig(config: NoaConfig): string[] {
   if (!['fail', 'proactive'].includes(config.passiveOverflow)) {
     warnings.push(`passiveOverflow「${String(config.passiveOverflow)}」无效，按 fail 运行`);
   }
+  if (!Number.isInteger(config.intents) || config.intents < 0) {
+    warnings.push('intents 必须是 >=0 的整数（0 表示自动）');
+  }
   if (!Number.isInteger(config.onebot.wsPort) || config.onebot.wsPort < 0 || config.onebot.wsPort > 65535) {
     warnings.push('onebot.wsPort 必须是 0..65535 的整数');
   }
@@ -133,6 +141,7 @@ function normalize(config: NoaConfig): NoaConfig {
   if (config.passiveOverflow !== 'fail' && config.passiveOverflow !== 'proactive') {
     config.passiveOverflow = 'fail';
   }
+  if (!Number.isInteger(config.intents) || config.intents < 0) config.intents = 0;
   if (typeof config.onebot !== 'object' || config.onebot === null) {
     config.onebot = { ...DEFAULT_CONFIG.onebot };
   }

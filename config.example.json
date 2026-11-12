@@ -1,6 +1,7 @@
 {
   "idMode": "mapped",
   "passiveOverflow": "fail",
+  "intents": 0,
   "onebot": {
     "enable": true,
     "accessToken": "",

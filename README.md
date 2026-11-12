@@ -4,8 +4,9 @@
 
 - 全量能力清单与逐条映射：见 **[文档](文档)**
 - 动作/事件/错误码使用手册：见 **[docs/USER-MANUAL.md](docs/USER-MANUAL.md)**
+- 标准协议外的扩展调用协议（规划稿）：见 **[文档](文档)**
 - 设计红线：只使用官方开放平台能力；**不做** QQ 客户端协议逆向、不模拟客户端登录、不碰非官方通道。
-- 平台做不到的动作（踢人、好友列表、群成员列表、@全体、json/xml 卡片……）一律以标准失败明确拒绝，绝不静默成功。
+- 平台无能力或本适配器未接线的动作（踢人、好友列表、群成员列表、群聊 @具体成员的标准文本通道、json/xml 卡片……）一律以标准失败明确拒绝，绝不静默成功。
 
 ## 快速开始
 
@@ -39,6 +40,7 @@ npm start            # 等价于 node bin/noa.mjs start
 {
   "idMode": "mapped",
   "passiveOverflow": "fail",
+  "intents": 0,
   "onebot": {
     "enable": true,
     "accessToken": "",
@@ -54,6 +56,7 @@ npm start            # 等价于 node bin/noa.mjs start
 |---|---|
 | `idMode` | `mapped`（默认）：openid → 稳定伪 QQ 号（持久映射、可反查）；`passthrough`：直接透传 openid 字符串 |
 | `passiveOverflow` | 被动窗口用尽后：`fail`（默认，明确失败）或 `proactive`（转入主动消息，受本地配额节流） |
+| `intents` | `0`（默认，自动）：订阅 `1<<25 \| 1<<24`，平台以 `4013/4014` 拒绝群成员事件时自动回退 `1<<25`；填正整数则原样使用且不自动回退 |
 | `onebot.wsPort` / `onebot.wsPath` | 正向 WS 监听端口与路径（默认 7791 / `/ws`） |
 | `onebot.reverseUrls` | 反向 WS：适配器拨号连接旧程序（推荐，最省事） |
 | `milky.enable` | 是否启用 Milky v1.3 端点（一期只实现核心动作子集） |
@@ -67,7 +70,9 @@ npm start            # 等价于 node bin/noa.mjs start
 - **重复投递**：同一官方 `msg_id` 在 5 分钟内只向下游投递一次（覆盖两个事件名携带同一消息、网关重连/平台重试等场景）。
 - **被动窗口**：群 5 分钟 / 5 条，单聊 60 分钟 / 4 条；超窗按 `passiveOverflow` 处理。
 - **主动消息**：受平台配额与用户开关限制（`40034105` 无权限、`40034100` 超频）。
-- **明确拒绝**：好友列表、群成员列表、踢人、管理员、群名片、头衔、匿名、退群、@全体、合并转发、json/xml 卡片、消息撤回事件下发等。
+- **富媒体发送**：走官方 `msg_type=7`；支持公网 URL 直传与 ≤5MB 本地 / `base64://` 直传，更大的本地文件明确失败（分片上传未实现）。文本与图片混排会拆成多条消息，各自消耗一次被动槽。
+- **引用回复 / @**：`reply` 段使用消息缓存中的官方 `REFIDX`（取不到时退化为普通被动回复并回传 `quoted:false`）；群聊 `at(qq=all)` 发送为 `<qqbot-at-everyone />`（机器人需为群管理员、每群每天 1 次）；群聊 `@具体成员` 官方只支持 markdown 消息，标准文本通道返回 `1400` 并指向 `noa_markdown`（未实现）；单聊不支持 @；系统表情明确拒绝。
+- **明确拒绝**：好友列表、群成员列表、踢人、管理员、群名片、头衔、匿名、退群、群聊 @具体成员（标准文本通道）、合并转发、json/xml 卡片、消息撤回事件下发等。
 
 ## Milky 一期覆盖
 
@@ -83,7 +88,7 @@ npm run typecheck
 npm run build
 ```
 
-测试覆盖：CQ 码 ⇄ 段数组往返、伪号映射持久化、被动窗口状态机、主动配额、38 动作三档路由、官方事件 → v11 事件映射（含新式 `<@openid>` / `mentions.is_you` 判定与 `at_me`/`to_me`）、`msg_elements`/ark 卡片文本降级、按 `msg_id` 去重、WS 鉴权与回包（HTTP 请求返回 426）、Milky `/api` 与 SSE、以及 **mock 官方网关 → 反向 WS 旧程序 → send_group_msg → mock REST（带 msg_id + msg_seq）** 的端到端链路。
+测试覆盖：CQ 码 ⇄ 段数组往返、伪号映射持久化、被动窗口状态机、主动配额、动作三档路由、官方事件 → v11 事件映射（含新式 `<@openid>` / `mentions.is_you` 判定与 `at_me`/`to_me`）、`msg_elements`/ark 卡片文本降级、按 `msg_id` 去重、富媒体上传端点与 `msg_type=7`/引用 `message_reference`、出站段转换（@ 标签 / 回复提取 / 显式拒绝）、intents `4014` 回退、官方群信息合并、WS 鉴权与回包（HTTP 请求返回 426）、Milky `/api` 与 SSE、以及 **mock 官方网关 → 反向 WS 旧程序 → send_group_msg → mock REST（带 msg_id + msg_seq）** 的端到端链路。
 
 ## 目录
 
@@ -107,8 +112,9 @@ src/
   cli.ts                  start / doctor
 文档           双协议映射总文档
 docs/USER-MANUAL.md      动作/事件/错误码使用手册
+文档          标准协议外的 noa/1 扩展调用协议（规划稿）
 ```
 
-## 下期（见 文档 §9）
+## 下期（见 文档 §9 与 文档 §9）
 
-Milky 全量动作与三通道、独立进程拆分、markdown/keyboard 权限路径、流式消息与互动召回、富媒体缓存代理。
+Milky 全量动作与三通道、独立进程拆分、`noa/1` 扩展（markdown/keyboard/图文卡片、按钮互动、菜单面板、入群自动审批、单聊流式与互动召回）、富媒体分片上传、富媒体缓存代理。

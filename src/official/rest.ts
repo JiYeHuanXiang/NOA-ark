@@ -3,9 +3,9 @@
  *
  * 能力对齐 文档 §1.2：
  *   - getAppAccessToken（appId + clientSecret）→ access_token，缓存 / 401 自动刷新
- *   - v2 群 / 单聊消息发送（msg_type 0 文本 / 7 富媒体）
- *   - 富媒体：URL 直传 + 分片上传（prepare → PUT part → finish），管理 file_info TTL
- *   - 群管理：禁言 / 取消禁言、入群审批、自动审批策略、机器人群内状态
+ *   - v2 群 / 单聊消息发送（msg_type 0 文本 / 7 富媒体；引用回复 message_reference）
+ *   - 富媒体：URL 直传 + ≤5MB 二进制直传（分片上传暂未实现），返回 file_info（含 TTL）
+ *   - 群管理：单成员 / 全员禁言、入群审批、群基本信息（需平台白名单）
  *   - 撤回等轻接口
  *
  * 统一域名 https://api.bot.qq.com；沙箱 / 代理可通过 baseUrl 覆盖。
@@ -80,22 +80,34 @@ interface TokenResponse {
 }
 
 interface SendTextPayload {
-  content: string;
+  content?: string;
   msg_id?: string;
   msg_seq?: number;
   msg_type: 0 | 7;
   media?: { file_info: string };
+  message_reference?: { message_id: string };
 }
 
 interface SendResponse {
   id?: string;
   message_ids?: string[];
+  ext_info?: { ref_idx?: string };
 }
 
 export interface SendTextOptions {
   /** 被动回复：携带消息 id 与序号；省略则为主动消息。 */
   msgId?: string;
   msgSeq?: number;
+  /** 引用回复：被引用消息的 REFIDX（非机器人消息取 message_scene.ext 的 msg_idx）。 */
+  refIdx?: string;
+}
+
+/** 官方群基本信息（/v2/groups/{group_openid}/info）。 */
+export interface OfficialGroupInfo {
+  groupOpenid: string;
+  groupName: string;
+  memberCount: number;
+  fingerMemo?: string;
 }
 
 export interface UploadOptions {
@@ -239,6 +251,9 @@ export class Rest {
       payload.msg_id = options.msgId;
       payload.msg_seq = options.msgSeq ?? 1;
     }
+    if (options?.refIdx) {
+      payload.message_reference = { message_id: options.refIdx };
+    }
     return this.request<SendResponse>('POST', `/v2/${pathPrefix}/${encodeURIComponent(target.targetId)}/messages`, payload);
   }
 
@@ -251,13 +266,17 @@ export class Rest {
   ): Promise<SendResponse> {
     const pathPrefix = target.scope === 'group' ? 'groups' : 'users';
     const payload: SendTextPayload = {
-      content,
       msg_type: 7,
       media: { file_info: fileInfo },
     };
+    // 官方 msg_type=7 示例不带 content；空串省略，避免 22006「消息类型与内容不匹配」。
+    if (content !== '') payload.content = content;
     if (options?.msgId) {
       payload.msg_id = options.msgId;
       payload.msg_seq = options.msgSeq ?? 1;
+    }
+    if (options?.refIdx) {
+      payload.message_reference = { message_id: options.refIdx };
     }
     return this.request<SendResponse>('POST', `/v2/${pathPrefix}/${encodeURIComponent(target.targetId)}/messages`, payload);
   }
@@ -274,73 +293,50 @@ export class Rest {
   }
 
   /**
-   * 上传富媒体：URL 直传（平台转存）；本地路径 / Buffer / base64 走分片。
-   * 返回 file_info（含 ttl）。
+   * 上传富媒体：URL 直传（平台转存）或本地 / base64 / Buffer 直传（≤5MB）。
+   * 返回 file_info（含 ttl）。群/单聊上传结果不互通，端点按目标作用域选择。
    */
   async uploadMedia(
     target: { scope: OfficialScope; targetId: string },
     fileData: string | Buffer,
     options?: UploadOptions,
   ): Promise<{ fileInfo: string; ttl?: number }> {
-    const isGroup = target.scope === 'group';
+    const pathPrefix = target.scope === 'group' ? 'groups' : 'users';
+    const apiPath = `/v2/${pathPrefix}/${encodeURIComponent(target.targetId)}/files`;
     const fileType = (options?.fileType ?? guessFileType(options?.fileName)) as 1 | 2 | 3 | 4;
 
-    // URL 直传：交给平台转存
+    // URL 直传：交给平台下载转存。
     if (typeof fileData === 'string' && /^https?:\/\//.test(fileData)) {
-      const resp = await this.request<{ file_info?: string; ttl?: number }>(
-        'POST',
-        '/v2/files',
-        {
-          file_type: fileType,
-          url: fileData,
-          srv_send_msg: false,
-          file_name: options?.fileName,
-        },
-      );
+      const resp = await this.request<{ file_info?: string; ttl?: number }>('POST', apiPath, {
+        file_type: fileType,
+        url: fileData,
+        srv_send_msg: false,
+        ...(options?.fileName === undefined ? {} : { file_name: options.fileName }),
+      });
       if (!resp.file_info) throw new RestApiError('富媒体上传未返回 file_info');
       return { fileInfo: resp.file_info, ttl: resp.ttl };
     }
 
-    // 本地 / base64 / Buffer → 分片上传
+    // 本地 / base64 / Buffer → 二进制直传（官方上限 5MB；分片上传暂未实现）。
     const buffer = typeof fileData === 'string'
       ? (fileData.startsWith('base64://')
         ? Buffer.from(fileData.slice('base64://'.length), 'base64')
         : await readLocalFile(fileData))
       : fileData;
-
-    const prepared = await this.request<{ file_uuid?: string; slice_count?: number; ttl?: number }>(
-      'POST',
-      '/v2/files',
-      {
-        file_type: fileType,
-        file_size: String(buffer.length),
-        file_name: options?.fileName ?? `file-${Date.now()}.${extOf(fileType)}`,
-        srv_send_msg: false,
-      },
-    );
-    const uuid = prepared.file_uuid;
-    if (!uuid) throw new RestApiError('富媒体预上传未返回 file_uuid');
-    const slices = prepared.slice_count ?? 1;
-
-    for (let part = 0; part < slices; part++) {
-      const start = part * SLICE_SIZE;
-      const end = Math.min(buffer.length, start + SLICE_SIZE);
-      const slice = buffer.subarray(start, end);
-      await this.request<unknown>(
-        'PUT',
-        `/v2/segments?file_uuid=${encodeURIComponent(uuid)}&part_index=${part}`,
-        slice,
-        // PUT 分片不需要 token 包裹的 JSON；但保持一致鉴权
+    if (buffer.length > BINARY_UPLOAD_LIMIT) {
+      throw new RestApiError(
+        `富媒体 ${buffer.length} 字节超过 5MB 直传上限；请改用公网 URL（分片上传暂未实现）`,
       );
     }
 
-    const finished = await this.request<{ file_info?: string; ttl?: number }>(
-      'POST',
-      '/v2/files',
-      { file_type: fileType, upload_type: 2, file_uuid: uuid, srv_send_msg: false },
-    );
-    if (!finished.file_info) throw new RestApiError('富媒体分片上传未返回 file_info');
-    return { fileInfo: finished.file_info, ttl: finished.ttl };
+    const resp = await this.request<{ file_info?: string; ttl?: number }>('POST', apiPath, {
+      file_type: fileType,
+      file_name: options?.fileName ?? `file-${Date.now()}.${extOf(fileType)}`,
+      file_data: buffer.toString('base64'),
+      srv_send_msg: false,
+    });
+    if (!resp.file_info) throw new RestApiError('富媒体上传未返回 file_info');
+    return { fileInfo: resp.file_info, ttl: resp.ttl };
   }
 
   /** 群禁言（duration 秒，0 取消）；memberOpenid 省略时为全员禁言。 */
@@ -353,12 +349,18 @@ export class Rest {
     );
   }
 
-  /** 机器人在群内状态 / 群信息（有权限时）。 */
-  async getGroupInfo(groupOpenid: string): Promise<Record<string, unknown>> {
-    return this.request<Record<string, unknown>>(
+  /** 群基本信息（需平台白名单权限；无权限时抛 RestApiError）。 */
+  async getGroupInfo(groupOpenid: string): Promise<OfficialGroupInfo> {
+    const resp = await this.request<Record<string, unknown>>(
       'GET',
       `/v2/groups/${encodeURIComponent(groupOpenid)}/info`,
     );
+    return {
+      groupOpenid: stringOf(resp.group_openid),
+      groupName: stringOf(resp.group_name),
+      memberCount: numberOf(resp.group_member_num),
+      fingerMemo: stringOf(resp.group_finger_memo) || undefined,
+    };
   }
 
   /** botinfo：机器人基础信息。 */
@@ -381,7 +383,20 @@ export class Rest {
   }
 }
 
-const SLICE_SIZE = 1024 * 1024; // 官方推荐分片大小（约 1MB）
+/** 官方二进制直传上限：5MB；更大的文件需分片上传（暂未实现）。 */
+const BINARY_UPLOAD_LIMIT = 5 * 1024 * 1024;
+
+function stringOf(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+  return '';
+}
+
+function numberOf(value: unknown): number {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string' && /^-?\d+$/.test(value)) return Number(value);
+  return 0;
+}
 
 function extOf(fileType: 1 | 2 | 3 | 4): string {
   switch (fileType) {

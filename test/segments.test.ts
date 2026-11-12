@@ -10,6 +10,7 @@ import {
   onebotToMilkySegments,
   parseOfficialContent,
   segmentsToCQ,
+  segmentsToOfficialParts,
   segmentsToPlainText,
 } from '../src/core/segments.js';
 
@@ -180,5 +181,51 @@ describe('cross-protocol segment conversion', () => {
   it('rejects unsupported Milky segments explicitly', () => {
     const result = milkyToOnebotSegments([{ type: 'file', data: { file_name: 'x' } }]);
     expect(result.ok).toBe(false);
+  });
+});
+
+describe('segmentsToOfficialParts', () => {
+  it('splits text and media into ordered parts, maps group @all, and extracts reply ids', () => {
+    const result = segmentsToOfficialParts(
+      [
+        { type: 'reply', data: { id: 'MSG_1' } },
+        { type: 'text', data: { text: '看' } },
+        { type: 'at', data: { qq: 'all' } },
+        { type: 'image', data: { file: 'https://example.com/a.png' } },
+        { type: 'record', data: { file: 'https://example.com/a.silk' } },
+      ],
+      { scope: 'group' },
+    );
+    expect(result).toEqual({
+      ok: true,
+      replyId: 'MSG_1',
+      parts: [
+        { kind: 'text', text: '看<qqbot-at-everyone />' },
+        { kind: 'media', mediaType: 'image', file: 'https://example.com/a.png' },
+        { kind: 'media', mediaType: 'record', file: 'https://example.com/a.silk' },
+      ],
+    });
+  });
+
+  it('rejects c2c @, group @user, face, unknown and noa segments explicitly', () => {
+    const c2cAll = segmentsToOfficialParts([{ type: 'at', data: { qq: 'all' } }], { scope: 'c2c' });
+    expect(c2cAll.ok).toBe(false);
+    if (!c2cAll.ok) expect(c2cAll.reason).toContain('单聊不支持');
+
+    const atUser = segmentsToOfficialParts([{ type: 'at', data: { qq: '123' } }], { scope: 'group' });
+    expect(atUser.ok).toBe(false);
+    if (!atUser.ok) expect(atUser.reason).toContain('markdown');
+
+    const face = segmentsToOfficialParts([{ type: 'face', data: { id: '1' } }], { scope: 'group' });
+    expect(face.ok).toBe(false);
+    if (!face.ok) expect(face.reason).toContain('表情');
+
+    const unknown = segmentsToOfficialParts([{ type: 'json', data: { data: '{}' } }], { scope: 'group' });
+    expect(unknown.ok).toBe(false);
+    if (!unknown.ok) expect(unknown.reason).toContain('json');
+
+    const noa = segmentsToOfficialParts([{ type: 'noa_markdown', data: { content: 'x' } }], { scope: 'group' });
+    expect(noa.ok).toBe(false);
+    if (!noa.ok) expect(noa.reason).toContain('文档');
   });
 });

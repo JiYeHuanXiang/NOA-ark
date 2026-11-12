@@ -10,10 +10,25 @@ import type { Logger, OfficialScope } from './types.js';
 import { IdMapper } from './core/idmap.js';
 import { MsgSeqManager } from './core/msgseq.js';
 import { Quota } from './core/quota.js';
-import { onebotToMilkySegments, segmentsToCQ, type AnyOneBotSegment, type MilkySegment } from './core/segments.js';
+import {
+  onebotToMilkySegments,
+  segmentsToCQ,
+  type AnyOneBotSegment,
+  type MilkySegment,
+  type OutboundPart,
+} from './core/segments.js';
 import type { Rest } from './official/rest.js';
 import type { GatewayHandle, OfficialEventEnvelope } from './official/gateway.js';
-import { OneBotActionRouter, type CachedMessage, type MessageCacheLike, type MessageSender } from './onebot/actions.js';
+import {
+  OneBotActionRouter,
+  type CachedMessage,
+  type GroupInfoSnapshot,
+  type MessageCacheLike,
+  type MessageSender,
+  type SendPartsOptions,
+  type SendPartsResult,
+  type SentMessagePart,
+} from './onebot/actions.js';
 import { officialEventToOneBotEvent, type AnyOneBotEvent, type OneBotMessageEvent } from './onebot/events.js';
 import { startOneBotServer, type OneBotServerHandle } from './onebot/server.js';
 import { startReverseClients, type ReverseHandle } from './onebot/reverse.js';
@@ -179,6 +194,7 @@ class BridgeSender implements MessageSender {
       msgseq: MsgSeqManager;
       quota: Quota;
       passiveOverflow: 'fail' | 'proactive';
+      logger: Logger;
       now: () => number;
     },
   ) {}
@@ -189,37 +205,103 @@ class BridgeSender implements MessageSender {
   }
 
   async sendGroupText(groupOpenid: string, text: string): Promise<{ messageId: string; passive: boolean }> {
-    return this.send('group', groupOpenid, text);
+    return this.asTextResult(await this.sendParts('group', groupOpenid, [{ kind: 'text', text }]));
   }
 
   async sendPrivateText(userOpenid: string, text: string): Promise<{ messageId: string; passive: boolean }> {
-    return this.send('c2c', userOpenid, text);
+    return this.asTextResult(await this.sendParts('c2c', userOpenid, [{ kind: 'text', text }]));
   }
 
-  private async send(
+  async sendGroupParts(
+    groupOpenid: string,
+    parts: readonly OutboundPart[],
+    options?: SendPartsOptions,
+  ): Promise<SendPartsResult> {
+    return this.sendParts('group', groupOpenid, parts, options);
+  }
+
+  async sendPrivateParts(
+    userOpenid: string,
+    parts: readonly OutboundPart[],
+    options?: SendPartsOptions,
+  ): Promise<SendPartsResult> {
+    return this.sendParts('c2c', userOpenid, parts, options);
+  }
+
+  async getGroupInfo(groupOpenid: string): Promise<GroupInfoSnapshot | null> {
+    try {
+      const info = await this.deps.rest.getGroupInfo(groupOpenid);
+      return { groupName: info.groupName || undefined, memberCount: info.memberCount };
+    } catch (err) {
+      this.deps.logger.debug(
+        `[bridge] 官方群信息不可用：${err instanceof Error ? err.message : String(err)}`,
+      );
+      return null;
+    }
+  }
+
+  private asTextResult(result: SendPartsResult): { messageId: string; passive: boolean } {
+    return { messageId: result.parts[0]?.messageId ?? '', passive: result.passive };
+  }
+
+  /**
+   * 按顺序发送分片：先上传富媒体（失败不消耗回复次数），再逐条领取被动槽。
+   * 图片/语音/视频各占一条官方消息，因此文本+图片会拆成多条发送。
+   */
+  private async sendParts(
     scope: OfficialScope,
     targetOpenid: string,
-    text: string,
-  ): Promise<{ messageId: string; passive: boolean }> {
+    parts: readonly OutboundPart[],
+    options?: SendPartsOptions,
+  ): Promise<SendPartsResult> {
     const rawMsgId = this.lastPassive.get(`${scope}:${targetOpenid}`);
-    if (rawMsgId !== undefined) {
-      const decision = this.deps.msgseq.acquire(rawMsgId, scope);
-      if (decision.passive) {
-        const resp = await this.deps.rest.sendText({ scope, targetId: targetOpenid }, text, {
-          msgId: rawMsgId,
-          msgSeq: decision.msgSeq,
-        });
-        return { messageId: String(resp.id ?? ''), passive: true };
+    let passiveAvailable = rawMsgId !== undefined;
+    let refAttached = false;
+    let allPassive = true;
+    const sent: SentMessagePart[] = [];
+
+    for (const part of parts) {
+      const prepared = part.kind === 'media'
+        ? await this.deps.rest.uploadMedia(
+          { scope, targetId: targetOpenid },
+          part.file,
+          { fileType: MEDIA_FILE_TYPE[part.mediaType], fileName: fileNameOf(part.file) },
+        )
+        : null;
+
+      let msgSeq: number | null = null;
+      if (passiveAvailable && rawMsgId !== undefined) {
+        const decision = this.deps.msgseq.acquire(rawMsgId, scope);
+        if (decision.passive) msgSeq = decision.msgSeq;
+        else passiveAvailable = false;
       }
+      if (msgSeq === null) {
+        if (this.deps.passiveOverflow !== 'proactive') {
+          throw new Error('被动回复窗口已关闭（群 5 分钟/5 条、单聊 60 分钟/4 条）；如需主动消息请设置 passiveOverflow=proactive');
+        }
+        const check = this.deps.quota.check(scope, targetOpenid, 1);
+        if (!check.ok) throw new Error(check.message ?? '本地主动消息配额受限');
+        allPassive = false;
+      }
+
+      const refIdx: string | undefined = !refAttached && options?.refIdx !== undefined && options.refIdx !== ''
+        ? options.refIdx
+        : undefined;
+      const sendOptions = msgSeq !== null
+        ? { msgId: rawMsgId!, msgSeq, refIdx }
+        : { refIdx };
+      const resp = part.kind === 'text'
+        ? await this.deps.rest.sendText({ scope, targetId: targetOpenid }, part.text, sendOptions)
+        : await this.deps.rest.sendRichMedia({ scope, targetId: targetOpenid }, prepared!.fileInfo, '', sendOptions);
+      if (msgSeq === null) this.deps.quota.record(scope, targetOpenid, this.deps.now());
+      refAttached = refIdx !== undefined;
+      sent.push({
+        messageId: String(resp.id ?? resp.message_ids?.[0] ?? ''),
+        refIdx: resp.ext_info?.ref_idx,
+      });
     }
-    if (this.deps.passiveOverflow !== 'proactive') {
-      throw new Error('被动回复窗口已关闭（群 5 分钟/5 条、单聊 60 分钟/4 条）；如需主动消息请设置 passiveOverflow=proactive');
-    }
-    const check = this.deps.quota.check(scope, targetOpenid, 1);
-    if (!check.ok) throw new Error(check.message ?? '本地主动消息配额受限');
-    const resp = await this.deps.rest.sendText({ scope, targetId: targetOpenid }, text);
-    this.deps.quota.record(scope, targetOpenid, this.deps.now());
-    return { messageId: String(resp.id ?? ''), passive: false };
+
+    return { parts: sent, passive: allPassive };
   }
 
   async recall(scope: OfficialScope, targetOpenid: string, rawMsgId: string): Promise<void> {
@@ -233,6 +315,21 @@ class BridgeSender implements MessageSender {
   async approveGroupRequest(groupOpenid: string, requestId: string, approve: boolean): Promise<void> {
     await this.deps.rest.setGroupAddRequest({ eventSeq: requestId, groupId: groupOpenid, approve });
   }
+}
+
+/** OneBot 富媒体段 → 官方 file_type：1 图片 / 2 视频 / 3 语音。 */
+const MEDIA_FILE_TYPE: Record<'image' | 'record' | 'video', 1 | 2 | 3> = {
+  image: 1,
+  video: 2,
+  record: 3,
+};
+
+/** 从 URL / 本地路径提取文件名，供官方富媒体上传使用。 */
+function fileNameOf(file: string): string | undefined {
+  if (file.startsWith('base64://')) return undefined;
+  const clean = file.replace(/^file:\/\//, '').split(/[?#]/)[0] ?? '';
+  const base = clean.split(/[\\/]/).pop() ?? '';
+  return base === '' ? undefined : base;
 }
 
 // —— 聚合入口 ——————————————————————————————
@@ -261,11 +358,14 @@ export async function startBridge(options: BridgeOptions): Promise<BridgeHandle>
   const now = options.now ?? (() => Date.now());
   const idMode = config.idMode;
 
-  // 机器人自身 openid：/users/@me 有则用之（@机器人 能还原为 self_id），否则退回 AppID。
+  // 机器人自身 openid / 昵称：/users/@me 有则用之，否则 openid 退回 AppID、昵称退回 Arona。
   let selfOpenid = '';
+  let selfNickname = 'Arona';
   try {
     const info = await rest.getBotInfo();
     selfOpenid = readString(info.id, info.openid, info.user_openid, info.user_id);
+    const officialName = readString(info.username, info.nickname, info.name);
+    if (officialName !== '') selfNickname = officialName;
   } catch (err) {
     logger.debug?.(`获取机器人信息失败：${err instanceof Error ? err.message : String(err)}`);
   }
@@ -297,6 +397,7 @@ export async function startBridge(options: BridgeOptions): Promise<BridgeHandle>
     msgseq,
     quota,
     passiveOverflow: config.passiveOverflow,
+    logger,
     now,
   });
 
@@ -307,7 +408,7 @@ export async function startBridge(options: BridgeOptions): Promise<BridgeHandle>
     messageCache: cache,
     groupDirectory: directory,
     selfOpenid: selfSeed,
-    selfNickname: 'Arona',
+    selfNickname,
     logger,
   });
   const milkyRouter = new MilkyActionRouter({
@@ -316,7 +417,7 @@ export async function startBridge(options: BridgeOptions): Promise<BridgeHandle>
     idMode,
     mapper,
     selfOpenid: selfSeed,
-    selfNickname: 'Arona',
+    selfNickname,
     appId,
   });
 
@@ -440,6 +541,7 @@ export async function startBridge(options: BridgeOptions): Promise<BridgeHandle>
     const pseudoId = idMode === 'passthrough' ? rawMsgId : mapper.pseudoMsgOf(rawMsgId);
     cache.put(pseudoId, {
       rawMsgId,
+      refIdx: extractRefIdx(data),
       scope,
       peerOpenid,
       senderOpenid: String(event.user_id),
@@ -623,6 +725,30 @@ function readString(...values: unknown[]): string {
     if (typeof value === 'number' && Number.isFinite(value)) return String(value);
   }
   return '';
+}
+
+/**
+ * 官方消息事件里的 REFIDX（message_scene.ext 中 `msg_idx=REFIDX_...`）。
+ *
+ * 引用回复的 message_reference.message_id 必须用它；message.id（ROBOT1.0_...）
+ * 不能替代。缺失时返回 undefined，引用退化为普通被动回复。
+ */
+function extractRefIdx(data: Record<string, unknown>): string | undefined {
+  const scene = data.message_scene;
+  if (!isRecord(scene)) return undefined;
+  const ext = scene.ext;
+  if (!Array.isArray(ext)) return undefined;
+  for (const item of ext) {
+    if (typeof item !== 'string') continue;
+    if (!item.startsWith('msg_idx=')) continue;
+    const value = item.slice('msg_idx='.length);
+    if (value !== '') return value;
+  }
+  return undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 void segmentsToCQ;

@@ -67,6 +67,7 @@ async function commandStart(argv: string[]): Promise<void> {
     tokenBaseUrl: config.tokenBaseUrl || config.baseUrl,
     logger,
     tokenProvider: () => rest.tokenForGateway(),
+    intents: config.intents > 0 ? config.intents : undefined,
   });
 
   const bridge = await startBridge({
@@ -126,7 +127,9 @@ function commandDoctor(): void {
       ? '❌ 未找到（设置 NOA_APP_ID / NOA_APP_SECRET）'
       : `✅ ${maskedAppId(credentials.appId)}（来源：环境变量）`}`,
     `3. ID 模式：${config.idMode}${config.idMode === 'mapped' ? '（openid → 稳定伪 QQ 号）' : '（openid 直通）'}`,
-    `4. 被动超窗策略：${config.passiveOverflow}`,
+    `4. 被动超窗策略：${config.passiveOverflow}；网关 intents：${config.intents > 0
+      ? String(config.intents)
+      : '自动（1<<25 | 1<<24，平台 4014 时回退 1<<25）'}`,
     `5. OneBot v11：${config.onebot.enable ? `✅ ws://127.0.0.1:${config.onebot.wsPort}${config.onebot.wsPath}（正向 WS，HTTP API 已移除）` : '（关闭）'}`,
     `6. 反向 WS：${config.onebot.reverseUrls.length === 0 ? '（未配置）' : config.onebot.reverseUrls.join(', ')}`,
     `7. Milky v1.3：${config.milky.enable ? `✅ http://127.0.0.1:${config.milky.port}/api/:api` : '（关闭）'}`,
