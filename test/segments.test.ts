@@ -184,6 +184,144 @@ describe('cross-protocol segment conversion', () => {
   });
 });
 
+describe('segmentsToOfficialParts · noa/1', () => {
+  const noa = { markdown: true, keyboard: true, card: true };
+  const keyboard = {
+    content: {
+      rows: [
+        {
+          buttons: [
+            {
+              id: 'btn_signin',
+              render_data: { label: '签到', style: 1 },
+              action: { type: 2, permission: { type: 2 }, data: '/签到', enter: true },
+            },
+          ],
+        },
+      ],
+    },
+  };
+
+  it('keeps A-class text and media in segment order', () => {
+    const result = segmentsToOfficialParts([
+      { type: 'text', data: { text: '前' } },
+      { type: 'image', data: { file: 'https://example.com/a.png' } },
+      { type: 'text', data: { text: '后' } },
+    ], { scope: 'group' });
+    expect(result).toEqual({
+      ok: true,
+      replyId: '',
+      parts: [
+        { kind: 'text', text: '前' },
+        { kind: 'media', mediaType: 'image', file: 'https://example.com/a.png' },
+        { kind: 'text', text: '后' },
+      ],
+    });
+  });
+
+  it('converts markdown + keyboard into one msg_type=2 part', () => {
+    const result = segmentsToOfficialParts(
+      [
+        { type: 'noa_markdown', data: { content: '**你好**' } },
+        { type: 'noa_keyboard', data: keyboard as never },
+      ],
+      { scope: 'group', noa },
+    );
+    expect(result).toEqual({
+      ok: true,
+      replyId: '',
+      parts: [{ kind: 'markdown', content: '**你好**', keyboard }],
+    });
+  });
+
+  it('appends at(qq=user) as a markdown tag only in markdown mode', () => {
+    const result = segmentsToOfficialParts(
+      [
+        { type: 'noa_markdown', data: { content: '你好' } },
+        { type: 'at', data: { qq: '123456' } },
+      ],
+      {
+        scope: 'group',
+        noa,
+        resolveAt: (qq) => (qq === '123456' ? 'OPENID_U' : null),
+      },
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.parts[0]).toMatchObject({
+        kind: 'markdown',
+        content: '你好\n<qqbot-at-user id="OPENID_U" />',
+      });
+    }
+  });
+
+  it('rejects keyboard alone, keyboard with media, and markdown mixed with text/media', () => {
+    const alone = segmentsToOfficialParts([{ type: 'noa_keyboard', data: keyboard as never }], { scope: 'group', noa });
+    expect(alone.ok).toBe(false);
+    if (!alone.ok) expect(alone.reason).toContain('同现');
+
+    const withMedia = segmentsToOfficialParts([
+      { type: 'text', data: { text: 'x' } },
+      { type: 'noa_keyboard', data: keyboard as never },
+      { type: 'image', data: { file: 'u' } },
+    ], { scope: 'group', noa });
+    expect(withMedia.ok).toBe(false);
+
+    const mixed = segmentsToOfficialParts([
+      { type: 'noa_markdown', data: { content: 'x' } },
+      { type: 'text', data: { text: 'y' } },
+    ], { scope: 'group', noa });
+    expect(mixed.ok).toBe(false);
+  });
+
+  it('validates keyboard and card fields before calling the platform', () => {
+    const badLabel = segmentsToOfficialParts(
+      [
+        { type: 'noa_markdown', data: { content: 'x' } },
+        { type: 'noa_keyboard', data: { content: { rows: [{ buttons: [{ render_data: { label: '12345678901' } }] }] } } },
+      ],
+      { scope: 'group', noa },
+    );
+    expect(badLabel.ok).toBe(false);
+    if (!badLabel.ok) expect(badLabel.reason).toContain('label');
+
+    const badCard = segmentsToOfficialParts(
+      [{ type: 'noa_card', data: { type: 'tuwen', content: { title: 'x', description: 'y', url: 'http://x', pic_url: 'https://x' } } }],
+      { scope: 'group', noa },
+    );
+    expect(badCard.ok).toBe(false);
+    if (!badCard.ok) expect(badCard.reason).toContain('https');
+  });
+
+  it('sends a card alone and rejects mixing it', () => {
+    const card = {
+      type: 'tuwen',
+      content: { title: '标题', description: '描述', url: 'https://example.com/a', pic_url: 'https://example.com/b.png' },
+    };
+    const alone = segmentsToOfficialParts([{ type: 'noa_card', data: card }], { scope: 'group', noa });
+    expect(alone).toEqual({ ok: true, replyId: '', parts: [{ kind: 'card', card }] });
+
+    const mixed = segmentsToOfficialParts(
+      [{ type: 'text', data: { text: 'x' } }, { type: 'noa_card', data: card }],
+      { scope: 'group', noa },
+    );
+    expect(mixed.ok).toBe(false);
+  });
+
+  it('fails noa segments when the extension is disabled and returns 1404 for ark/embed', () => {
+    const disabled = segmentsToOfficialParts([{ type: 'noa_card', data: { type: 'tuwen', content: {} } }], { scope: 'group' });
+    expect(disabled.ok).toBe(false);
+    if (!disabled.ok) expect(disabled.reason).toContain('文档');
+
+    const ark = segmentsToOfficialParts([{ type: 'noa_ark', data: { json: {} } }], { scope: 'group', noa });
+    expect(ark.ok).toBe(false);
+    if (!ark.ok) {
+      expect(ark.retcode).toBe(1404);
+      expect(ark.reason).toContain('noa_card');
+    }
+  });
+});
+
 describe('segmentsToOfficialParts', () => {
   it('splits text and media into ordered parts, maps group @all, and extracts reply ids', () => {
     const result = segmentsToOfficialParts(

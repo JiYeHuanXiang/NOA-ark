@@ -6,7 +6,7 @@
  *
  * 能力边界（文档 §3.4 / §4.4 / §5）：
  *   - 官方无原生 json/xml/markdown 接收，无合并转发（node/forward）；
- *   - noa_markdown / noa_keyboard / noa_ark / noa_embed 是 noa 私有扩展段，
+ *   - noa_markdown / noa_keyboard / noa_card / noa_ark / noa_embed 是 noa 私有扩展段，
  *     仅在 OneBot 侧 opt-in 使用，不参与跨协议转换；
  *   - 未知段类型在 CQ 层面原样保留为 `{type, data}`，跨协议转换则明确失败。
  */
@@ -116,10 +116,63 @@ export interface OneBotNoaMarkdownSegment {
   data: { content: string };
 }
 
-/** noa 扩展：官方 keyboard 按钮模板（opt-in）。 */
+/** 官方 keyboard 按钮预览样式：0 灰色线框 / 1 蓝色线框 / 3 白底红字 / 4 蓝底白字。 */
+export type NoaKeyboardStyle = 0 | 1 | 3 | 4;
+
+/** 官方 keyboard 动作：0 跳转 / 1 回调 / 2 指令。 */
+export type NoaKeyboardActionType = 0 | 1 | 2;
+
+export interface NoaKeyboardButton {
+  id?: string;
+  render_data?: {
+    label?: string;
+    visited_label?: string;
+    style?: NoaKeyboardStyle;
+    [key: string]: unknown;
+  };
+  action?: {
+    type?: NoaKeyboardActionType;
+    permission?: { type?: 0 | 1 | 2; [key: string]: unknown };
+    data?: string;
+    enter?: boolean;
+    reply?: boolean;
+    modal?: { content?: string; confirm_text?: string; cancel_text?: string; [key: string]: unknown };
+    [key: string]: unknown;
+  };
+  [key: string]: unknown;
+}
+
+export interface NoaKeyboardRow {
+  buttons: NoaKeyboardButton[];
+}
+
+/** 官方 keyboard：短形式 {id} 与长形式 {content:{rows}} 互斥。 */
+export type NoaKeyboardPayload =
+  | { id: string }
+  | { content: { rows: NoaKeyboardRow[] } };
+
+/** noa 扩展：官方 keyboard 按钮模板（opt-in，必须与 text/noa_markdown 同现）。 */
 export interface OneBotNoaKeyboardSegment {
   type: 'noa_keyboard';
-  data: { rows: string[][] };
+  data: NoaKeyboardPayload;
+}
+
+/** 官方唯一可在群聊/单聊发送的卡片：msg_type=8 图文卡片。 */
+export interface NoaCardPayload {
+  type: 'tuwen';
+  content: {
+    title: string;
+    description: string;
+    url: string;
+    pic_url: string;
+    [key: string]: unknown;
+  };
+}
+
+/** noa 扩展：官方 msg_type=8 图文卡片（opt-in）。 */
+export interface OneBotNoaCardSegment {
+  type: 'noa_card';
+  data: NoaCardPayload;
 }
 
 /** noa 扩展：官方 msg_type=3 ark 卡片（opt-in）。 */
@@ -146,6 +199,7 @@ export type OneBotSegment =
   | OneBotMentionAllSegment
   | OneBotNoaMarkdownSegment
   | OneBotNoaKeyboardSegment
+  | OneBotNoaCardSegment
   | OneBotNoaArkSegment
   | OneBotNoaEmbedSegment;
 
@@ -523,17 +577,30 @@ export function needsRichMedia(segments: readonly AnyOneBotSegment[]): boolean {
 
 /** 出站消息的一个有序分片；官方一条消息只能承载一种内容，故按段拆成多条发送。 */
 export type OutboundPart =
-  | { kind: 'text'; text: string }
-  | { kind: 'media'; mediaType: 'image' | 'record' | 'video'; file: string };
+  | { kind: 'text'; text: string; keyboard?: NoaKeyboardPayload }
+  | { kind: 'markdown'; content: string; keyboard?: NoaKeyboardPayload }
+  | { kind: 'media'; mediaType: 'image' | 'record' | 'video'; file: string }
+  | { kind: 'card'; card: NoaCardPayload };
+
+/** noa/1 已启用的出站能力（关闭时对应段明确失败）。 */
+export interface NoaOutboundCapabilities {
+  markdown: boolean;
+  keyboard: boolean;
+  card: boolean;
+}
 
 export interface OfficialOutboundOptions {
   /** 消息场景；群聊与单聊的 @ 能力不同。 */
   scope: 'group' | 'c2c';
+  /** noa/1 扩展开关；省略视为全部关闭。 */
+  noa?: NoaOutboundCapabilities;
+  /** at 段目标（伪号 / 透传 openid）→ 官方 openid；markdown 模式下用于生成 @ 标签。 */
+  resolveAt?: (qq: string) => string | null;
 }
 
 export type OfficialOutboundResult =
   | { ok: true; parts: OutboundPart[]; replyId: string }
-  | { ok: false; reason: string };
+  | { ok: false; reason: string; retcode?: number };
 
 const MEDIA_TYPE_BY_SEGMENT: Record<string, 'image' | 'record' | 'video'> = {
   image: 'image',
@@ -541,25 +608,39 @@ const MEDIA_TYPE_BY_SEGMENT: Record<string, 'image' | 'record' | 'video'> = {
   video: 'video',
 };
 
+/** 键盘行/列上限（官方超限返回 40034029）。 */
+const MAX_KEYBOARD_ROWS = 5;
+const MAX_KEYBOARD_BUTTONS_PER_ROW = 5;
+
 /**
- * OneBot 段数组 → 官方出站分片（文本 / 单条富媒体）。
+ * OneBot 段数组 → 官方出站分片（文本 / markdown / 图文卡片 / 单条富媒体）。
  *
- * - text 合并为文本分片；群聊 `at(qq=all)` → `<qqbot-at-everyone />`（管理员、每群每天 1 次）；
- * - 群聊 @具体成员官方只支持 markdown 消息，标准文本通道无法真 @ → 明确失败（等 noa_markdown）；
- * - reply 只提取引用目标（replyId），由调用方解析 REFIDX；
- * - image/record/video 各成一个 media 分片（官方 msg_type=7 单条只带一个 file_info）；
- * - face 在群聊/单聊无官方能力，明确失败；
- * - noa_* 扩展段尚未启用（规划见 文档），同样明确失败。
+ * A 类行为保持不变：text 与 media 按段顺序交错拆条，相邻 text 合并。
+ * noa/1 扩展（需 options.noa 显式启用）：
+ * - noa_markdown 单独成条（msg_type=2），可与 noa_keyboard 同现；
+ * - noa_card 单独成条（msg_type=8）；
+ * - noa_keyboard 必须挂在 text 或 noa_markdown 上，富媒体不可挂；
+ * - markdown 消息里的 at(qq=用户) 转换为 `<qqbot-at-user id="openid" />`；
+ * - noa_ark / noa_embed 群/单聊永久不可发送，返回 retcode=1404。
  */
 export function segmentsToOfficialParts(
   segments: readonly AnyOneBotSegment[],
   options: OfficialOutboundOptions,
 ): OfficialOutboundResult {
+  const noa = options.noa;
+  const markdownMode = noa?.markdown === true && segments.some((segment) => segment.type === 'noa_markdown');
   const parts: OutboundPart[] = [];
+  const markdownAtTags: string[] = [];
   let replyId = '';
+  let textBody = '';
+  let mediaCount = 0;
+  let markdown: string | null = null;
+  let keyboard: NoaKeyboardPayload | null = null;
+  let card: NoaCardPayload | null = null;
 
   const pushText = (text: string): void => {
     if (text === '') return;
+    textBody += text;
     const last = parts[parts.length - 1];
     if (last !== undefined && last.kind === 'text') {
       last.text += text;
@@ -582,13 +663,26 @@ export function segmentsToOfficialParts(
           if (options.scope !== 'group') {
             return { ok: false, reason: '官方单聊不支持 @ 能力（@全体成员仅在群聊可用）' };
           }
-          pushText('<qqbot-at-everyone />');
+          const tag = '<qqbot-at-everyone />';
+          if (markdownMode) markdownAtTags.push(tag);
+          else pushText(tag);
           break;
         }
-        return {
-          ok: false,
-          reason: '官方群聊的 @用户 仅支持 markdown 消息（noa_markdown 尚未实现）；单聊不支持 @。请先发纯文本，或等待 文档 B1',
-        };
+        if (options.scope !== 'group') {
+          return { ok: false, reason: '官方单聊不支持 @ 能力' };
+        }
+        if (!markdownMode) {
+          return {
+            ok: false,
+            reason: '官方群聊的 @用户 仅支持 markdown 消息；请在同一消息里使用 noa_markdown 段（文档 §3.1）',
+          };
+        }
+        const openid = options.resolveAt?.(qq) ?? '';
+        if (openid === '') {
+          return { ok: false, reason: `at 目标 ${qq} 不在本地映射中，无法转换为官方 openid` };
+        }
+        markdownAtTags.push(`<qqbot-at-user id="${escapeXmlAttr(openid)}" />`);
+        break;
       }
       case 'reply': {
         const id = readString(segment.data, 'id');
@@ -599,7 +693,8 @@ export function segmentsToOfficialParts(
         if (options.scope !== 'group') {
           return { ok: false, reason: '官方单聊不支持 @ 能力（@全体成员仅在群聊可用）' };
         }
-        pushText('<qqbot-at-everyone />');
+        if (markdownMode) markdownAtTags.push('<qqbot-at-everyone />');
+        else pushText('<qqbot-at-everyone />');
         break;
       case 'face':
         return { ok: false, reason: '官方群聊/单聊不支持发送系统表情（<emoji:id> 仅文字子频道可用）' };
@@ -611,19 +706,221 @@ export function segmentsToOfficialParts(
           return { ok: false, reason: `消息段「${segment.type}」缺少 file/url` };
         }
         parts.push({ kind: 'media', mediaType: MEDIA_TYPE_BY_SEGMENT[segment.type]!, file });
+        mediaCount += 1;
         break;
       }
-      case 'noa_markdown':
-      case 'noa_keyboard':
+      case 'noa_markdown': {
+        if (noa?.markdown !== true) {
+          return { ok: false, reason: 'noa 扩展消息段「noa_markdown」未启用（见 文档）' };
+        }
+        if (markdown !== null) {
+          return { ok: false, reason: '同一消息只能有一个 noa_markdown 段' };
+        }
+        const content = readString(segment.data, 'content');
+        if (content.trim() === '') {
+          return { ok: false, reason: 'noa_markdown 的 content 不能为空' };
+        }
+        markdown = content;
+        break;
+      }
+      case 'noa_keyboard': {
+        if (noa?.keyboard !== true) {
+          return { ok: false, reason: 'noa 扩展消息段「noa_keyboard」未启用（见 文档）' };
+        }
+        if (keyboard !== null) {
+          return { ok: false, reason: '同一消息只能有一个 noa_keyboard 段' };
+        }
+        const validated = validateKeyboardPayload(segment.data);
+        if (!validated.ok) return { ok: false, reason: validated.reason };
+        keyboard = validated.keyboard;
+        break;
+      }
+      case 'noa_card': {
+        if (noa?.card !== true) {
+          return { ok: false, reason: 'noa 扩展消息段「noa_card」未启用（见 文档）' };
+        }
+        if (card !== null) {
+          return { ok: false, reason: '同一消息只能有一个 noa_card 段' };
+        }
+        const validated = validateCardPayload(segment.data);
+        if (!validated.ok) return { ok: false, reason: validated.reason };
+        card = validated.card;
+        break;
+      }
       case 'noa_ark':
       case 'noa_embed':
-        return { ok: false, reason: `noa 扩展消息段「${segment.type}」尚未启用（规范见 文档）` };
+        return {
+          ok: false,
+          retcode: 1404,
+          reason: '官方群聊/单聊不支持发送结构化卡片（收 ✅ / 发 ❌）；图文卡片请用 noa_card',
+        };
       default:
         return { ok: false, reason: `消息段「${segment.type}」无法经 QQ 官方平台发送（无对应能力）` };
     }
   }
 
+  if (card !== null) {
+    if (markdown !== null || textBody.trim() !== '' || mediaCount > 0 || keyboard !== null) {
+      return { ok: false, reason: 'noa_card 必须单独发送，不能与 text / noa_markdown / noa_keyboard / 富媒体混排' };
+    }
+    return { ok: true, parts: [{ kind: 'card', card }], replyId };
+  }
+
+  if (markdown !== null) {
+    if (textBody.trim() !== '') {
+      return { ok: false, reason: 'noa_markdown 不能与 text 混排（官方一条消息只能一种内容类型）' };
+    }
+    if (mediaCount > 0) {
+      return { ok: false, reason: 'noa_markdown 不能与富媒体混排（官方一条消息只能一种内容类型）' };
+    }
+    const content = markdownAtTags.length === 0
+      ? markdown
+      : `${markdown}${markdown.endsWith('\n') ? '' : '\n'}${markdownAtTags.join(' ')}`;
+    const part: OutboundPart = keyboard === null
+      ? { kind: 'markdown', content }
+      : { kind: 'markdown', content, keyboard };
+    return { ok: true, parts: [part], replyId };
+  }
+
+  if (keyboard !== null) {
+    if (mediaCount > 0) {
+      return { ok: false, reason: 'noa_keyboard 不能挂在富媒体消息上' };
+    }
+    const first = parts[0];
+    if (first === undefined || first.kind !== 'text' || textBody.trim() === '') {
+      return { ok: false, reason: 'noa_keyboard 必须与同一个消息里的 text 或 noa_markdown 同现' };
+    }
+    parts[0] = { kind: 'text', text: first.text, keyboard };
+  }
+
   return { ok: true, parts, replyId };
+}
+
+function escapeXmlAttr(value: string): string {
+  return value.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function validateKeyboardPayload(
+  data: unknown,
+): { ok: true; keyboard: NoaKeyboardPayload } | { ok: false; reason: string } {
+  const payload = isRecord(data) ? data : {};
+  const hasId = typeof payload.id === 'string' && payload.id !== '';
+  const hasContent = isRecord(payload.content);
+  if (hasId && hasContent) {
+    return { ok: false, reason: 'noa_keyboard 的 id 与 content 互斥，只能二选一' };
+  }
+  if (hasId) return { ok: true, keyboard: { id: payload.id as string } };
+  if (!hasContent) {
+    return { ok: false, reason: 'noa_keyboard 需要 id（模板）或 content.rows（自定义按钮）' };
+  }
+
+  const rows = (payload.content as Record<string, unknown>).rows;
+  if (!Array.isArray(rows) || rows.length === 0) {
+    return { ok: false, reason: 'noa_keyboard.content.rows 必须是非空数组' };
+  }
+  if (rows.length > MAX_KEYBOARD_ROWS) {
+    return { ok: false, reason: `noa_keyboard 最多 ${MAX_KEYBOARD_ROWS} 行按钮（官方超限返回 40034029）` };
+  }
+  for (const [rowIndex, row] of rows.entries()) {
+    if (!isRecord(row) || !Array.isArray(row.buttons) || row.buttons.length === 0) {
+      return { ok: false, reason: `noa_keyboard 第 ${rowIndex + 1} 行缺少 buttons` };
+    }
+    if (row.buttons.length > MAX_KEYBOARD_BUTTONS_PER_ROW) {
+      return {
+        ok: false,
+        reason: `noa_keyboard 每行最多 ${MAX_KEYBOARD_BUTTONS_PER_ROW} 个按钮（官方超限返回 40034029）`,
+      };
+    }
+    for (const [buttonIndex, rawButton] of row.buttons.entries()) {
+      const prefix = `noa_keyboard 第 ${rowIndex + 1} 行第 ${buttonIndex + 1} 个按钮`;
+      if (!isRecord(rawButton)) return { ok: false, reason: `${prefix} 必须是对象` };
+      const renderData = rawButton.render_data;
+      if (isRecord(renderData)) {
+        const label = renderData.label;
+        if (label !== undefined && (typeof label !== 'string' || [...label].length > 10)) {
+          return { ok: false, reason: `${prefix} 的 label 必须是不超过 10 字符的字符串` };
+        }
+        const style = renderData.style;
+        if (style !== undefined && style !== 0 && style !== 1 && style !== 3 && style !== 4) {
+          return { ok: false, reason: `${prefix} 的 style 只能是 0/1/3/4` };
+        }
+      }
+      const action = rawButton.action;
+      if (isRecord(action)) {
+        const type = action.type;
+        if (type !== undefined && type !== 0 && type !== 1 && type !== 2) {
+          return { ok: false, reason: `${prefix} 的 action.type 只能是 0/1/2` };
+        }
+        if ((type === 1 || type === 2) && (typeof action.data !== 'string' || action.data === '')) {
+          return { ok: false, reason: `${prefix} 的 action.type=${String(type)} 需要非空 action.data` };
+        }
+        const permission = action.permission;
+        if (isRecord(permission)) {
+          const permissionType = permission.type;
+          if (permissionType !== undefined && permissionType !== 0 && permissionType !== 1 && permissionType !== 2) {
+            return { ok: false, reason: `${prefix} 的 action.permission.type 只能是 0/1/2` };
+          }
+        }
+        const modal = action.modal;
+        if (isRecord(modal)) {
+          const content = modal.content;
+          if (content !== undefined) {
+            if (typeof content !== 'string' || [...content].length > 40) {
+              return { ok: false, reason: `${prefix} 的 modal.content 必须是不超过 40 字符的字符串` };
+            }
+            if (/https?:\/\//i.test(content)) {
+              return { ok: false, reason: `${prefix} 的 modal.content 不能包含 URL` };
+            }
+          }
+          for (const key of ['confirm_text', 'cancel_text'] as const) {
+            const value = modal[key];
+            if (value !== undefined && (typeof value !== 'string' || [...value].length > 4)) {
+              return { ok: false, reason: `${prefix} 的 modal.${key} 必须是不超过 4 字符的字符串` };
+            }
+          }
+        }
+      }
+    }
+  }
+
+  return { ok: true, keyboard: { content: { rows: rows as NoaKeyboardRow[] } } };
+}
+
+function validateCardPayload(
+  data: unknown,
+): { ok: true; card: NoaCardPayload } | { ok: false; reason: string } {
+  if (!isRecord(data)) return { ok: false, reason: 'noa_card.data 必须是对象' };
+  if (data.type !== 'tuwen') return { ok: false, reason: 'noa_card.type 仅支持 tuwen（图文卡片）' };
+  const content = data.content;
+  if (!isRecord(content)) return { ok: false, reason: 'noa_card.content 必须是对象' };
+
+  const title = content.title;
+  if (typeof title !== 'string' || [...title].length < 1 || [...title].length > 50) {
+    return { ok: false, reason: 'noa_card.content.title 必须是 1–50 字符的字符串' };
+  }
+  const description = content.description;
+  if (typeof description !== 'string' || [...description].length < 1 || [...description].length > 200) {
+    return { ok: false, reason: 'noa_card.content.description 必须是 1–200 字符的字符串' };
+  }
+  for (const key of ['url', 'pic_url'] as const) {
+    const value = content[key];
+    if (typeof value !== 'string' || !value.startsWith('https://') || value.length > 1024) {
+      return { ok: false, reason: `noa_card.content.${key} 必须是 https 链接且不超过 1024 字符` };
+    }
+  }
+
+  return {
+    ok: true,
+    card: {
+      type: 'tuwen',
+      content: {
+        title,
+        description,
+        url: content.url as string,
+        pic_url: content.pic_url as string,
+      },
+    },
+  };
 }
 
 /**

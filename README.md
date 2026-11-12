@@ -4,9 +4,9 @@
 
 - 全量能力清单与逐条映射：见 **[文档](文档)**
 - 动作/事件/错误码使用手册：见 **[docs/USER-MANUAL.md](docs/USER-MANUAL.md)**
-- 标准协议外的扩展调用协议（规划稿）：见 **[文档](文档)**
+- 标准协议外的扩展调用协议：见 **[文档](文档)**（`noa/1`，默认关闭）
 - 设计红线：只使用官方开放平台能力；**不做** QQ 客户端协议逆向、不模拟客户端登录、不碰非官方通道。
-- 平台无能力或本适配器未接线的动作（踢人、好友列表、群成员列表、群聊 @具体成员的标准文本通道、json/xml 卡片……）一律以标准失败明确拒绝，绝不静默成功。
+- 平台无能力或本适配器未接线的动作（好友列表、管理员任免、群名片、头衔、匿名、改群名、合并转发、json/xml 卡片……）一律以标准失败明确拒绝，绝不静默成功。
 
 ## 快速开始
 
@@ -48,7 +48,22 @@ npm start            # 等价于 node bin/noa.mjs start
     "wsPath": "/ws",
     "reverseUrls": ["ws://127.0.0.1:6700"]
   },
-  "milky": { "enable": false, "port": 7792, "accessToken": "" }
+  "milky": { "enable": false, "port": 7792, "accessToken": "" },
+  "noa": {
+    "ext": {
+      "markdown": false,
+      "keyboard": false,
+      "card": false,
+      "interaction": false,
+      "typing": false,
+      "menu": false,
+      "joinPolicy": false,
+      "stream": false,
+      "wakeup": false
+    },
+    "autoAckInteraction": true,
+    "interactionRaw": false
+  }
 }
 ```
 
@@ -60,6 +75,9 @@ npm start            # 等价于 node bin/noa.mjs start
 | `onebot.wsPort` / `onebot.wsPath` | 正向 WS 监听端口与路径（默认 7791 / `/ws`） |
 | `onebot.reverseUrls` | 反向 WS：适配器拨号连接旧程序（推荐，最省事） |
 | `milky.enable` | 是否启用 Milky v1.3 端点（一期只实现核心动作子集） |
+| `noa.ext.*` | noa/1 扩展开关：`markdown` / `keyboard` / `card` / `interaction` / `typing` / `menu` / `joinPolicy` / `stream` / `wakeup`，全部默认 `false`；未启用时对应段/动作明确失败 |
+| `noa.autoAckInteraction` | `INTERACTION_CREATE`（type 11/12）是否先自动 ACK `code=0`（默认 `true`） |
+| `noa.interactionRaw` | 互动事件里是否附带官方原始 `d`（默认 `false`） |
 
 环境变量：`NOA_APP_ID` / `NOA_APP_SECRET`（兼容 `QQBOT_APPID` / `QQBOT_SECRET`）、`NOA_CONFIG`、`NOA_HOME`、`NOA_DEBUG=1`。
 
@@ -71,14 +89,25 @@ npm start            # 等价于 node bin/noa.mjs start
 - **被动窗口**：群 5 分钟 / 5 条，单聊 60 分钟 / 4 条；超窗按 `passiveOverflow` 处理。
 - **主动消息**：受平台配额与用户开关限制（`40034105` 无权限、`40034100` 超频）。
 - **富媒体发送**：走官方 `msg_type=7`；支持公网 URL 直传与 ≤5MB 本地 / `base64://` 直传，更大的本地文件明确失败（分片上传未实现）。文本与图片混排会拆成多条消息，各自消耗一次被动槽。
-- **引用回复 / @**：`reply` 段使用消息缓存中的官方 `REFIDX`（取不到时退化为普通被动回复并回传 `quoted:false`）；群聊 `at(qq=all)` 发送为 `<qqbot-at-everyone />`（机器人需为群管理员、每群每天 1 次）；群聊 `@具体成员` 官方只支持 markdown 消息，标准文本通道返回 `1400` 并指向 `noa_markdown`（未实现）；单聊不支持 @；系统表情明确拒绝。
-- **明确拒绝**：好友列表、群成员列表、踢人、管理员、群名片、头衔、匿名、退群、群聊 @具体成员（标准文本通道）、合并转发、json/xml 卡片、消息撤回事件下发等。
+- **群成员（2026-09-03 白名单接口）**：`get_group_member_list` / `get_group_member_info` / `set_group_kick`（批量移除 + 可选拉黑）已接线；接口仅白名单机器人可用（平台错误 `11253`），列表 30 条/页、60 QPM，适配器最多拉 20 页（600 人）并告警截断。
+- **媒体缓存**：`get_image` / `get_record` 把消息附件 URL 下载到 `data/cache/media` 并返回本地路径（单文件上限 20MB、20 秒超时；拒绝本机/内网字面量地址与跳入内网的重定向；不做 DNS 解析后的 IP 固定）；入站图片/语音段可直接把 `file` 传给它们。
+- **引用回复 / @**：`reply` 段使用消息缓存中的官方 `REFIDX`（取不到时退化为普通被动回复并回传 `quoted:false`）；群聊 `at(qq=all)` 发送为 `<qqbot-at-everyone />`（机器人需为群管理员、每群每天 1 次）；群聊 `@具体成员` 在 `noa_markdown` 消息里转换为 `<qqbot-at-user />`，标准文本通道返回 `1400`；单聊不支持 @；系统表情明确拒绝。
+- **明确拒绝**：好友列表、管理员任免、群名片、头衔、匿名、退群、群聊 @具体成员（标准文本通道）、合并转发、json/xml 卡片、消息撤回事件下发等。
 
 ## Milky 一期覆盖
 
 `send_private_message` / `send_group_message` / `recall_private_message` / `recall_group_message` / `get_message` / `mark_message_as_read` / `get_login_info` / `get_impl_info` / `set_group_member_mute` / `set_group_whole_mute` / `accept_group_request` / `reject_group_request`。
 
 其余 API（好友域、文件域、公告/精华/表情回应/nudge 等）返回 `retcode: -404` 明确失败，二期补齐。
+
+## noa/1 扩展（默认关闭）
+
+标准协议覆盖不到的官方能力通过 `noa_*` 段 / 动作 / 事件提供，需在 `noa.ext.*` 显式启用；未启用时一律明确失败，绝不静默降级。完整调用协议见 **[文档](文档)**。
+
+- **消息段**：`noa_markdown`（`msg_type=2`）、`noa_keyboard`（内嵌按钮，挂在 text / markdown 上）、`noa_card`（`msg_type=8` 图文卡片）。`noa_ark` / `noa_embed` 群/单聊永久 `1404`。
+- **事件**：`INTERACTION_CREATE` → `notice/noa_interaction`；需要显式把 `intents` 设为包含 `1<<26`。`type=11/12` 默认在 3 秒内自动 ACK `code=0`（可用 `noa.autoAckInteraction=false` 关闭后手动 `noa_ack_interaction`）。
+- **动作**：`noa_send_typing`（单聊）、`noa_ack_interaction`、`noa_set_menu`、`noa_set_panel` / `noa_list_panels`（列表需官方必填 `scope`）、`noa_set_group_add_request_policy`、`noa_stream_begin` / `noa_stream_append` / `noa_stream_end`（单聊流式）、`noa_send_wakeup`（单聊互动召回）。
+- `get_version_info` 会返回 `noa_ext_version: "noa/1"` 与已启用能力列表 `noa_ext[]`。
 
 ## 测试
 
@@ -88,7 +117,7 @@ npm run typecheck
 npm run build
 ```
 
-测试覆盖：CQ 码 ⇄ 段数组往返、伪号映射持久化、被动窗口状态机、主动配额、动作三档路由、官方事件 → v11 事件映射（含新式 `<@openid>` / `mentions.is_you` 判定与 `at_me`/`to_me`）、`msg_elements`/ark 卡片文本降级、按 `msg_id` 去重、富媒体上传端点与 `msg_type=7`/引用 `message_reference`、出站段转换（@ 标签 / 回复提取 / 显式拒绝）、intents `4014` 回退、官方群信息合并、WS 鉴权与回包（HTTP 请求返回 426）、Milky `/api` 与 SSE、以及 **mock 官方网关 → 反向 WS 旧程序 → send_group_msg → mock REST（带 msg_id + msg_seq）** 的端到端链路。
+测试覆盖：CQ 码 ⇄ 段数组往返、伪号映射持久化、被动窗口状态机、主动配额、动作三档路由、官方事件 → v11 事件映射（含新式 `<@openid>` / `mentions.is_you` 判定与 `at_me`/`to_me`）、`msg_elements`/ark 卡片文本降级、按 `msg_id` 去重、富媒体上传端点与 `msg_type=7`/引用 `message_reference`、出站段转换（@ 标签 / 回复提取 / 显式拒绝）、intents `4014` 回退、官方群信息合并、群成员白名单接口与分页、媒体缓存下载/命中/超限、`message_sent`、WS 鉴权与回包（HTTP 请求返回 426）、Milky `/api` 与 SSE、noa/1 段转换与组合校验、互动事件映射、noa_* 动作门控与流式生命周期、以及 **mock 官方网关 → 反向 WS 旧程序 → send_group_msg → mock REST（带 msg_id + msg_seq）** 的端到端链路。
 
 ## 目录
 
@@ -99,22 +128,27 @@ src/
   core/idmap.ts          openid ⇄ 伪号 / message_id ⇄ 伪 message_id（持久化 + LRU）
   core/msgseq.ts         per-msg_id 被动窗口与 msg_seq
   core/quota.ts          主动消息本地配额
+  core/media-cache.ts    附件 URL → 本地文件缓存（get_image / get_record）
   core/segments.ts       官方内容/附件 ⇄ CQ ⇄ OneBot 段 ⇄ Milky 段
   official/gateway.ts    官方 WSS 网关（Identify / Resume / 心跳 / 指数退避）
-  official/rest.ts       官方 v2 REST（消息 / 撤回 / 富媒体 / 禁言 / 审批）
+  official/rest.ts       官方 v2 REST（消息 / 撤回 / 富媒体 / 禁言 / 审批 / 群成员 / 互动 / 流式）
   onebot/events.ts       官方事件 → OneBot v11 事件
-  onebot/actions.ts      38 个公开动作三档路由
-  onebot/server.ts       正向 WS（HTTP API 与 HTTP 上报已移除）
+  onebot/actions.ts      38 个标准动作 + noa_* 委派
+  onebot/server.ts       正向 WS（HTTP API 与 HTTP POST 已移除）
   onebot/reverse.ts      反向 WS 客户端
+  noa/events.ts          INTERACTION_CREATE → noa_interaction
+  noa/router.ts          noa_* 动作路由与能力门控
+  noa/service.ts         noa/1 官方实现（markdown/card/typing/流式/审批策略）
+  noa/join-policy.ts     入群自动审批 strategy_id 持久缓存
   milky/actions.ts       Milky v1.3 动作子集
   milky/server.ts        /api/:api + /event（SSE/WS）
   bridge.ts              事件 fan-out + 发送实现（被动窗/配额）
   cli.ts                  start / doctor
 文档           双协议映射总文档
 docs/USER-MANUAL.md      动作/事件/错误码使用手册
-文档          标准协议外的 noa/1 扩展调用协议（规划稿）
+文档          标准协议外的 noa/1 扩展调用协议
 ```
 
 ## 下期（见 文档 §9 与 文档 §9）
 
-Milky 全量动作与三通道、独立进程拆分、`noa/1` 扩展（markdown/keyboard/图文卡片、按钮互动、菜单面板、入群自动审批、单聊流式与互动召回）、富媒体分片上传、富媒体缓存代理。
+Milky 全量动作与三通道、独立进程拆分、富媒体分片上传（>5MB）、互动事件 `event_id` 被动回复、`noa/1` 灰度能力真机验证（menu/panels/stream）、更多群管理接口。

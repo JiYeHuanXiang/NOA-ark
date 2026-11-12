@@ -81,10 +81,16 @@ interface TokenResponse {
 
 interface SendTextPayload {
   content?: string;
-  msg_id?: string;
-  msg_seq?: number;
-  msg_type: 0 | 7;
+  markdown?: { content: string };
+  card?: { type: string; content: Record<string, unknown> };
+  keyboard?: Record<string, unknown>;
+  msg_type: 0 | 2 | 6 | 7 | 8;
   media?: { file_info: string };
+  input_notify?: { input_type: number; input_second: number };
+  is_wakeup?: boolean;
+  msg_id?: string;
+  event_id?: string;
+  msg_seq?: number;
   message_reference?: { message_id: string };
 }
 
@@ -97,9 +103,15 @@ interface SendResponse {
 export interface SendTextOptions {
   /** 被动回复：携带消息 id 与序号；省略则为主动消息。 */
   msgId?: string;
+  /** 被动回复事件 id（INTERACTION_CREATE / GROUP_ADD_ROBOT 等），与 msgId 二选一。 */
+  eventId?: string;
   msgSeq?: number;
   /** 引用回复：被引用消息的 REFIDX（非机器人消息取 message_scene.ext 的 msg_idx）。 */
   refIdx?: string;
+  /** 内嵌键盘（keyboard 短形式 {id} 或长形式 {content:{rows}}）。 */
+  keyboard?: Record<string, unknown>;
+  /** 互动召回（仅单聊；不校验 msg_id/event_id 有效期）。 */
+  isWakeup?: boolean;
 }
 
 /** 官方群基本信息（/v2/groups/{group_openid}/info）。 */
@@ -115,6 +127,40 @@ export interface UploadOptions {
   fileName?: string;
   /** 富媒体总发送内容（可选文本说明）。 */
   content?: string;
+}
+
+/** 官方群成员（2026-09-03 白名单接口）。 */
+export interface OfficialGroupMember {
+  memberOpenid: string;
+  username: string;
+  /** member / admin / owner */
+  role: string;
+  bot: boolean;
+  joinedAt: string;
+  unionOpenid?: string;
+}
+
+export interface StreamFrameOptions {
+  /** 首帧省略；后续帧携带首帧响应 id。 */
+  streamMsgId?: string;
+  /** 从 0 开始严格递增。 */
+  index: number;
+  /** 1 生成中 / 10 结束。 */
+  inputState: 1 | 10;
+  contentType: 'text' | 'markdown';
+  inputMode: 'append' | 'replace';
+  content: string;
+  msgId?: string;
+  eventId?: string;
+  msgSeq?: number;
+  /** 互动召回：不校验 msg_id/event_id 有效期。 */
+  isWakeup?: boolean;
+}
+
+export interface StreamFrameResponse {
+  streamMsgId: string;
+  remainMsgLen?: number;
+  refIdx?: string;
 }
 
 
@@ -247,13 +293,7 @@ export class Rest {
   ): Promise<SendResponse> {
     const pathPrefix = target.scope === 'group' ? 'groups' : 'users';
     const payload: SendTextPayload = { content, msg_type: 0 };
-    if (options?.msgId) {
-      payload.msg_id = options.msgId;
-      payload.msg_seq = options.msgSeq ?? 1;
-    }
-    if (options?.refIdx) {
-      payload.message_reference = { message_id: options.refIdx };
-    }
+    applySendOptions(payload, options);
     return this.request<SendResponse>('POST', `/v2/${pathPrefix}/${encodeURIComponent(target.targetId)}/messages`, payload);
   }
 
@@ -271,14 +311,207 @@ export class Rest {
     };
     // 官方 msg_type=7 示例不带 content；空串省略，避免 22006「消息类型与内容不匹配」。
     if (content !== '') payload.content = content;
-    if (options?.msgId) {
+    applySendOptions(payload, options);
+    return this.request<SendResponse>('POST', `/v2/${pathPrefix}/${encodeURIComponent(target.targetId)}/messages`, payload);
+  }
+
+  /** 发送 markdown 消息（msg_type=2），可附带 keyboard。 */
+  async sendMarkdown(
+    target: { scope: OfficialScope; targetId: string },
+    content: string,
+    options?: SendTextOptions,
+  ): Promise<SendResponse> {
+    const pathPrefix = target.scope === 'group' ? 'groups' : 'users';
+    const payload: SendTextPayload = { msg_type: 2, markdown: { content } };
+    applySendOptions(payload, options);
+    return this.request<SendResponse>('POST', `/v2/${pathPrefix}/${encodeURIComponent(target.targetId)}/messages`, payload);
+  }
+
+  /** 发送图文卡片（msg_type=8，type=tuwen）。 */
+  async sendCard(
+    target: { scope: OfficialScope; targetId: string },
+    card: { type: string; content: Record<string, unknown> },
+    options?: SendTextOptions,
+  ): Promise<SendResponse> {
+    const pathPrefix = target.scope === 'group' ? 'groups' : 'users';
+    const payload: SendTextPayload = { msg_type: 8, card };
+    applySendOptions(payload, options);
+    return this.request<SendResponse>('POST', `/v2/${pathPrefix}/${encodeURIComponent(target.targetId)}/messages`, payload);
+  }
+
+  /** 单聊「正在输入」（msg_type=6）；群聊平台不支持。 */
+  async sendTyping(
+    userOpenid: string,
+    seconds: number,
+    options?: SendTextOptions,
+  ): Promise<SendResponse> {
+    const payload: SendTextPayload = {
+      msg_type: 6,
+      input_notify: { input_type: 1, input_second: seconds },
+    };
+    applySendOptions(payload, options);
+    return this.request<SendResponse>('POST', `/v2/users/${encodeURIComponent(userOpenid)}/messages`, payload);
+  }
+
+  /** 单聊互动召回（is_wakeup=true）；不携带被动参数。 */
+  async sendWakeup(userOpenid: string, content: string): Promise<SendResponse> {
+    return this.request<SendResponse>(
+      'POST',
+      `/v2/users/${encodeURIComponent(userOpenid)}/messages`,
+      { msg_type: 0, content, is_wakeup: true },
+    );
+  }
+
+  /** 流式单聊消息（首帧 index=0；后续帧携带 stream_msg_id）。 */
+  async sendStreamFrame(userOpenid: string, options: StreamFrameOptions): Promise<StreamFrameResponse> {
+    const payload: Record<string, unknown> = {
+      input_mode: options.inputMode,
+      input_state: options.inputState,
+      index: options.index,
+      content_type: options.contentType,
+      content_raw: options.content,
+    };
+    if (options.streamMsgId !== undefined && options.streamMsgId !== '') {
+      payload.stream_msg_id = options.streamMsgId;
+    }
+    if (options.msgId !== undefined && options.msgId !== '') {
       payload.msg_id = options.msgId;
       payload.msg_seq = options.msgSeq ?? 1;
+    } else if (options.eventId !== undefined && options.eventId !== '') {
+      payload.event_id = options.eventId;
+      payload.msg_seq = options.msgSeq ?? 1;
     }
-    if (options?.refIdx) {
-      payload.message_reference = { message_id: options.refIdx };
-    }
-    return this.request<SendResponse>('POST', `/v2/${pathPrefix}/${encodeURIComponent(target.targetId)}/messages`, payload);
+    if (options.isWakeup === true) payload.is_wakeup = true;
+    const resp = await this.request<{
+      id?: string;
+      remain_msg_len?: number;
+      ext_info?: { ref_idx?: string };
+    }>('POST', `/v2/users/${encodeURIComponent(userOpenid)}/stream_messages`, payload);
+    return {
+      streamMsgId: stringOf(resp.id),
+      remainMsgLen: typeof resp.remain_msg_len === 'number' ? resp.remain_msg_len : undefined,
+      refIdx: resp.ext_info?.ref_idx,
+    };
+  }
+
+  /** 回应互动事件（INTERACTION_CREATE）；同一 id 只能回应一次。 */
+  async ackInteraction(interactionId: string, code: number): Promise<void> {
+    await this.request<unknown>(
+      'PUT',
+      `/interactions/${encodeURIComponent(interactionId)}`,
+      { code },
+    );
+  }
+
+  /** 修改全局自定义菜单（仅 C2C）。 */
+  async setMenu(menu: Record<string, unknown>): Promise<{ version?: number }> {
+    return this.request<{ version?: number }>('PUT', '/v2/menu', { menu });
+  }
+
+  /** 创建指令面板；返回 {panel_id}。 */
+  async createPanel(panel: Record<string, unknown>): Promise<Record<string, unknown>> {
+    return this.request<Record<string, unknown>>('POST', '/v2/panels', panel);
+  }
+
+  /** 查询指令面板列表；scope 为官方必填（c2c / group）。 */
+  async listPanels(
+    scope: 'c2c' | 'group',
+    cursor?: string,
+    limit?: number,
+  ): Promise<Record<string, unknown>> {
+    const query = new URLSearchParams({ scope });
+    if (cursor !== undefined && cursor !== '') query.set('cursor', cursor);
+    if (limit !== undefined) query.set('limit', String(limit));
+    return this.request<Record<string, unknown>>('GET', `/v2/panels?${query.toString()}`);
+  }
+
+  /** 创建入群自动审批策略。 */
+  async createJoinApprovalStrategy(body: Record<string, unknown>): Promise<Record<string, unknown>> {
+    return this.request<Record<string, unknown>>('POST', '/v2/groups/join_approval_strategy', body);
+  }
+
+  /** 修改入群自动审批策略。 */
+  async updateJoinApprovalStrategy(
+    strategyId: string,
+    body: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    return this.request<Record<string, unknown>>(
+      'PATCH',
+      `/v2/groups/join_approval_strategy/${encodeURIComponent(strategyId)}`,
+      body,
+    );
+  }
+
+  /** 增删策略白名单 QQ 号。 */
+  async updateJoinApprovalWhitelist(
+    strategyId: string,
+    op: 'add' | 'del',
+    whitelistUsers: readonly string[],
+  ): Promise<Record<string, unknown>> {
+    return this.request<Record<string, unknown>>(
+      'POST',
+      `/v2/groups/join_approval_strategy/${encodeURIComponent(strategyId)}/whitelist_users`,
+      { op, whitelist_users: [...whitelistUsers] },
+    );
+  }
+
+  /** 对关联群执行全量扫描。 */
+  async executeJoinApprovalStrategy(strategyId: string): Promise<Record<string, unknown>> {
+    return this.request<Record<string, unknown>>(
+      'POST',
+      `/v2/groups/join_approval_strategy/${encodeURIComponent(strategyId)}/execute`,
+      {},
+    );
+  }
+
+  /** 获取群成员列表（白名单，30 条/页）。 */
+  async listGroupMembers(
+    groupOpenid: string,
+    cursor?: string,
+  ): Promise<{ members: OfficialGroupMember[]; nextCursor: string }> {
+    const query = cursor === undefined || cursor === '' ? '' : `?cursor=${encodeURIComponent(cursor)}`;
+    const resp = await this.request<{ members?: Array<Record<string, unknown>>; next_cursor?: unknown }>(
+      'GET',
+      `/v2/groups/${encodeURIComponent(groupOpenid)}/members${query}`,
+    );
+    return {
+      members: Array.isArray(resp.members) ? resp.members.map(toGroupMember) : [],
+      nextCursor: stringOf(resp.next_cursor),
+    };
+  }
+
+  /** 获取单个群成员信息（白名单）。 */
+  async getGroupMember(groupOpenid: string, memberOpenid: string): Promise<OfficialGroupMember> {
+    const resp = await this.request<Record<string, unknown>>(
+      'GET',
+      `/v2/groups/${encodeURIComponent(groupOpenid)}/members/${encodeURIComponent(memberOpenid)}`,
+    );
+    return toGroupMember(resp);
+  }
+
+  /** 批量移除群成员（单次最多 20 个，可选择同时拉黑；白名单）。 */
+  async batchRemoveGroupMembers(
+    groupOpenid: string,
+    memberOpenids: readonly string[],
+    addToBlacklist = false,
+  ): Promise<{ result: string; failedBlacklistOpenids: string[] }> {
+    const resp = await this.request<{
+      remove_members_result?: unknown;
+      add_to_member_blacklist_fail_openids?: unknown;
+    }>(
+      'POST',
+      `/v2/groups/${encodeURIComponent(groupOpenid)}/batch_remove_members`,
+      {
+        member_openids: [...memberOpenids],
+        add_to_member_blacklist: addToBlacklist,
+      },
+    );
+    return {
+      result: stringOf(resp.remove_members_result),
+      failedBlacklistOpenids: Array.isArray(resp.add_to_member_blacklist_fail_openids)
+        ? resp.add_to_member_blacklist_fail_openids.map((item) => stringOf(item)).filter((item) => item !== '')
+        : [],
+    };
   }
 
   /** 撤回消息（群 / 单聊通用；官方仅支持 2 分钟内的自身消息）。 */
@@ -385,6 +618,34 @@ export class Rest {
 
 /** 官方二进制直传上限：5MB；更大的文件需分片上传（暂未实现）。 */
 const BINARY_UPLOAD_LIMIT = 5 * 1024 * 1024;
+
+/** 被动参数 / 引用 / 键盘 / 召回 统一写入请求体。 */
+function applySendOptions(payload: SendTextPayload, options?: SendTextOptions): void {
+  if (options === undefined) return;
+  if (options.msgId !== undefined && options.msgId !== '') {
+    payload.msg_id = options.msgId;
+    payload.msg_seq = options.msgSeq ?? 1;
+  } else if (options.eventId !== undefined && options.eventId !== '') {
+    payload.event_id = options.eventId;
+    payload.msg_seq = options.msgSeq ?? 1;
+  }
+  if (options.refIdx !== undefined && options.refIdx !== '') {
+    payload.message_reference = { message_id: options.refIdx };
+  }
+  if (options.keyboard !== undefined) payload.keyboard = options.keyboard;
+  if (options.isWakeup === true) payload.is_wakeup = true;
+}
+
+function toGroupMember(value: Record<string, unknown>): OfficialGroupMember {
+  return {
+    memberOpenid: stringOf(value.member_openid ?? value.memberOpenid),
+    username: stringOf(value.username),
+    role: stringOf(value.member_role ?? value.memberRole) || 'member',
+    bot: value.bot === true,
+    joinedAt: stringOf(value.joined_at ?? value.joinedAt),
+    unionOpenid: stringOf(value.union_openid ?? value.unionOpenid) || undefined,
+  };
+}
 
 function stringOf(value: unknown): string {
   if (typeof value === 'string') return value;

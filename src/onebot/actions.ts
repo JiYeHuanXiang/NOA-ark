@@ -10,6 +10,7 @@
  */
 
 import type { IdMapper } from '../core/idmap.js';
+import type { MediaCache } from '../core/media-cache.js';
 import {
   cqToSegments,
   officialPartsToSegments,
@@ -19,6 +20,8 @@ import {
   type AnyOneBotSegment,
   type OutboundPart,
 } from '../core/segments.js';
+import { enabledNoaExt, type NoaConf } from '../config.js';
+import type { NoaActionRouter } from '../noa/router.js';
 import type { OfficialScope } from '../types.js';
 
 export interface OneBotResponse {
@@ -50,6 +53,16 @@ export interface GroupInfoSnapshot {
   memberCount?: number;
 }
 
+/** 官方群成员（2026-09-03 白名单接口）。 */
+export interface GroupMemberSnapshot {
+  memberOpenid: string;
+  username: string;
+  /** member / admin / owner */
+  role: string;
+  bot?: boolean;
+  joinedAt?: string;
+}
+
 /** 发送/管理能力抽象：由桥接层实现（官方 REST + 被动窗口 + 配额）。 */
 export interface MessageSender {
   sendGroupText(groupOpenid: string, text: string): Promise<{ messageId: string; passive: boolean }>;
@@ -70,6 +83,16 @@ export interface MessageSender {
   recall(scope: OfficialScope, targetOpenid: string, rawMsgId: string): Promise<void>;
   setGroupBan(groupOpenid: string, muteSeconds: number, memberOpenid?: string): Promise<void>;
   approveGroupRequest(groupOpenid: string, requestId: string, approve: boolean): Promise<void>;
+  /** 群成员列表（白名单；30 条/页，cursor 为空表示第一页）。 */
+  listGroupMembers(groupOpenid: string, cursor?: string): Promise<{ members: GroupMemberSnapshot[]; nextCursor: string }>;
+  /** 单个群成员信息（白名单）；平台返回错误时抛错。 */
+  getGroupMember(groupOpenid: string, memberOpenid: string): Promise<GroupMemberSnapshot>;
+  /** 批量移除群成员（单次最多 20 个；可选同时拉黑）。 */
+  batchRemoveGroupMembers(
+    groupOpenid: string,
+    memberOpenids: readonly string[],
+    addToBlacklist: boolean,
+  ): Promise<{ failedBlacklistOpenids: string[] }>;
 }
 
 export interface CachedMessage {
@@ -104,6 +127,16 @@ export interface ActionDeps {
   selfOpenid: string;
   selfNickname: string;
   logger: { warn(message: string): void };
+  /** 网关真实在线状态（缺省时退化为 sender 是否存在）。 */
+  isOnline?: () => boolean;
+  /** get_image / get_record 的本地媒体缓存；未配置时明确失败。 */
+  mediaCache?: MediaCache | null;
+  /** noa/1 扩展能力开关（缺省视为全部关闭）。 */
+  noaConf?: NoaConf;
+  /** noa_* 动作路由器；未接入时 noa_* 动作统一 1404。 */
+  noa?: NoaActionRouter | null;
+  /** 发送成功后向上游投递 message_sent 事件。 */
+  emitEvent?: (event: unknown) => void;
 }
 
 const RET_OK = 0;
@@ -114,8 +147,6 @@ const RET_UNSUPPORTED = 1404;
 const UNSUPPORTED_ACTIONS: Record<string, string> = {
   get_friend_list: '官方平台无好友列表 API',
   get_stranger_info: '官方平台无陌生人信息 API',
-  get_group_member_list: '官方 2026-09-03 新增群成员列表接口（白名单/内邀），本适配器未接线',
-  set_group_kick: '官方 2026-09-03 新增群成员批量移除接口（白名单），本适配器未接线',
   set_group_admin: '官方群机器人无管理员任免 API',
   set_group_card: '官方群机器人无群名片 API',
   set_group_special_title: '官方群机器人无专属头衔 API',
@@ -129,8 +160,6 @@ const UNSUPPORTED_ACTIONS: Record<string, string> = {
   get_csrf_token: '官方开放平台无 CSRF Token',
   get_credentials: '官方开放平台无 Cookie/CSRF 体系',
   get_forward_msg: '官方平台无合并转发消息获取 API',
-  get_image: '本地图片缓存代理未实现（二期）',
-  get_record: '本地语音缓存代理未实现（二期）',
   set_friend_add_request: '官方平台未开放好友审批能力',
 };
 
@@ -152,6 +181,19 @@ export class OneBotActionRouter {
   /** 动作入口；未知动作与非公开动作统一 1404。 */
   async dispatch(action: string, params: Record<string, unknown>, echo?: unknown): Promise<OneBotResponse> {
     const echoValue = echo ?? params?.echo;
+    if (action.startsWith('noa_')) {
+      const noaResponse = this.deps.noa === undefined || this.deps.noa === null
+        ? null
+        : await this.deps.noa.dispatch(action, params, echoValue);
+      if (noaResponse !== null) return noaResponse;
+      return {
+        status: 'failed',
+        retcode: RET_UNSUPPORTED,
+        data: null,
+        message: `noa 扩展动作 ${action} 未接入（见 文档）`,
+        echo: echoValue,
+      };
+    }
     const unsupported = UNSUPPORTED_ACTIONS[action];
     if (unsupported !== undefined) {
       return { status: 'failed', retcode: RET_UNSUPPORTED, data: null, message: unsupported, echo: echoValue };
@@ -169,15 +211,23 @@ export class OneBotActionRouter {
         return this.getMsg(params, echoValue);
       case 'get_login_info':
         return this.ok(echoValue, { user_id: this.selfId(), nickname: this.deps.selfNickname });
-      case 'get_status':
-        return this.ok(echoValue, { online: this.deps.sender !== null, good: this.deps.sender !== null });
-      case 'get_version_info':
+      case 'get_status': {
+        const online = this.deps.isOnline !== undefined
+          ? this.deps.isOnline()
+          : this.deps.sender !== null;
+        return this.ok(echoValue, { online, good: online });
+      }
+      case 'get_version_info': {
+        const noaExt = this.deps.noaConf === undefined ? [] : enabledNoaExt(this.deps.noaConf.ext);
         return this.ok(echoValue, {
           app_name: 'noa-ark',
           app_version: '0.1.0',
           protocol_version: 'v11',
           id_mode: this.deps.idMode,
+          noa_ext_version: 'noa/1',
+          noa_ext: noaExt,
         });
+      }
       case 'can_send_image':
       case 'can_send_record':
         return this.ok(echoValue, { yes: true });
@@ -192,14 +242,22 @@ export class OneBotActionRouter {
         }));
         return this.ok(echoValue, groups);
       }
+      case 'get_group_member_list':
+        return this.getGroupMemberList(params, echoValue);
       case 'get_group_member_info':
         return this.getGroupMemberInfo(params, echoValue);
+      case 'set_group_kick':
+        return this.setGroupKick(params, echoValue);
       case 'set_group_ban':
         return this.setGroupBan(params, echoValue);
       case 'set_group_whole_ban':
         return this.setGroupWholeBan(params, echoValue);
       case 'set_group_add_request':
         return this.setGroupAddRequest(params, echoValue);
+      case 'get_image':
+        return this.getCachedMedia(params, echoValue, '图片');
+      case 'get_record':
+        return this.getCachedMedia(params, echoValue, '语音');
       case 'set_restart':
         return { status: 'async', retcode: RET_ASYNC, data: null, message: '', echo: echoValue };
       case 'clean_cache':
@@ -257,8 +315,17 @@ export class OneBotActionRouter {
     const sender = this.deps.sender;
     if (sender === null) return this.badRequest('机器人尚未连接，无法发送', echo);
 
-    const conversion = segmentsToOfficialParts(normalizeMessage(paramMessage(params)), { scope });
-    if (!conversion.ok) return this.badRequest(conversion.reason, echo);
+    const ext = this.deps.noaConf?.ext;
+    const conversion = segmentsToOfficialParts(normalizeMessage(paramMessage(params)), {
+      scope,
+      noa: ext === undefined
+        ? undefined
+        : { markdown: ext.markdown, keyboard: ext.keyboard, card: ext.card },
+      resolveAt: (qq) => this.resolveUser(qq),
+    });
+    if (!conversion.ok) {
+      return this.fail(conversion.retcode ?? RET_BAD_REQUEST, conversion.reason, echo);
+    }
     const parts = conversion.parts.filter((part) => part.kind !== 'text' || part.text.trim() !== '');
     if (parts.length === 0) return this.badRequest('消息内容为空', echo);
 
@@ -268,6 +335,7 @@ export class OneBotActionRouter {
         ? await sender.sendGroupParts(targetOpenid, parts, { refIdx: reply.refIdx })
         : await sender.sendPrivateParts(targetOpenid, parts, { refIdx: reply.refIdx });
       this.cacheOutbound(scope, targetOpenid, parts, result);
+      this.emitMessageSent(scope, targetOpenid, parts, result);
       const data: Record<string, unknown> = {
         message_id: this.exposeMsg(result.parts[0]?.messageId ?? ''),
         message_ids: result.parts.map((part) => this.exposeMsg(part.messageId)),
@@ -315,11 +383,7 @@ export class OneBotActionRouter {
       const pseudoId = this.deps.idMode === 'passthrough'
         ? sent.messageId
         : this.deps.mapper.pseudoMsgOf(sent.messageId);
-      const segments: AnyOneBotSegment[] = part.kind === 'media'
-        ? [{ type: part.mediaType, data: { file: part.file } }]
-        : officialPartsToSegments(parseOfficialContent(part.text), {
-          resolve: (openid) => (this.deps.idMode === 'passthrough' ? openid : this.deps.mapper.pseudoOf(openid)),
-        });
+      const segments = this.outboundPartToSegments(part);
       this.deps.messageCache.put(pseudoId, {
         rawMsgId: sent.messageId,
         refIdx: sent.refIdx,
@@ -331,6 +395,62 @@ export class OneBotActionRouter {
         rawMessage: segmentsToCQ(segments),
         tsMs: Date.now(),
       });
+    }
+  }
+
+  /** 出站分片 → 可缓存的 OneBot 段（message_sent 事件与 get_msg 共用）。 */
+  private outboundPartToSegments(part: OutboundPart): AnyOneBotSegment[] {
+    switch (part.kind) {
+      case 'media':
+        return [{ type: part.mediaType, data: { file: part.file } }];
+      case 'markdown': {
+        const segments: AnyOneBotSegment[] = [{ type: 'noa_markdown', data: { content: part.content } }];
+        if (part.keyboard !== undefined) segments.push({ type: 'noa_keyboard', data: part.keyboard });
+        return segments;
+      }
+      case 'card':
+        return [{ type: 'noa_card', data: part.card }];
+      case 'text': {
+        const segments = officialPartsToSegments(parseOfficialContent(part.text), {
+          resolve: (openid) => (this.deps.idMode === 'passthrough' ? openid : this.deps.mapper.pseudoOf(openid)),
+        });
+        if (part.keyboard !== undefined) segments.push({ type: 'noa_keyboard', data: part.keyboard });
+        return segments;
+      }
+    }
+  }
+
+  /** OneBot v11 message_sent：机器人发出的消息也向上游广播。 */
+  private emitMessageSent(
+    scope: OfficialScope,
+    targetOpenid: string,
+    parts: readonly OutboundPart[],
+    result: SendPartsResult,
+  ): void {
+    const emit = this.deps.emitEvent;
+    if (emit === undefined || result.parts.length === 0) return;
+    try {
+      const segments = parts.flatMap((part) => this.outboundPartToSegments(part));
+      const event: Record<string, unknown> = {
+        time: Math.floor(Date.now() / 1000),
+        self_id: this.selfId(),
+        post_type: 'message_sent',
+        message_type: scope === 'group' ? 'group' : 'private',
+        sub_type: scope === 'group' ? 'normal' : 'friend',
+        message_id: this.exposeMsg(result.parts[0]?.messageId ?? ''),
+        user_id: this.selfId(),
+        target_id: this.expose(targetOpenid),
+        message: segments,
+        raw_message: segmentsToCQ(segments),
+        font: 0,
+        sender: { user_id: this.selfId(), nickname: this.deps.selfNickname },
+      };
+      if (scope === 'group') event.group_id = this.expose(targetOpenid);
+      emit(event);
+    } catch (err) {
+      this.deps.logger.warn(
+        `[actions] 投递 message_sent 失败：${err instanceof Error ? err.message : String(err)}`,
+      );
     }
   }
 
@@ -393,7 +513,10 @@ export class OneBotActionRouter {
   }
 
   private async getGroupMemberInfo(params: Record<string, unknown>, echo: unknown): Promise<OneBotResponse> {
+    const sender = this.deps.sender;
+    if (sender === null) return this.badRequest('机器人尚未连接', echo);
     const userId = String(params.user_id ?? '');
+    if (userId === '') return this.badRequest('get_group_member_info 需要 user_id', echo);
     if (userId === this.selfIdString()) {
       return this.ok(echo, {
         group_id: params.group_id,
@@ -406,13 +529,121 @@ export class OneBotActionRouter {
         join_time: 0,
       });
     }
-    return {
-      status: 'failed',
-      retcode: RET_UNSUPPORTED,
-      data: null,
-      message: '官方 2026-09-03 新增群成员信息接口（白名单/内邀），本适配器未接线；当前仅支持机器人自身',
-      echo,
-    };
+
+    const groupOpenid = this.resolveGroup(params.group_id);
+    if (groupOpenid === null) return this.badRequest(`未知 group_id：${String(params.group_id ?? '')}`, echo);
+    const memberOpenid = this.resolveUser(userId);
+    if (memberOpenid === null) {
+      return this.badRequest(`未知 user_id：${userId}（官方只接受已知 openid）`, echo);
+    }
+    try {
+      const member = await sender.getGroupMember(groupOpenid, memberOpenid);
+      return this.ok(echo, {
+        group_id: params.group_id,
+        user_id: this.expose(member.memberOpenid),
+        nickname: member.username,
+        card: '',
+        role: normalizeRole(member.role),
+        level: 0,
+        title: '',
+        join_time: parseRfc3339Seconds(member.joinedAt),
+        is_robot: member.bot === true,
+      });
+    } catch (err) {
+      return this.badRequest(`官方群成员接口不可用（需平台白名单权限）：${errText(err)}`, echo);
+    }
+  }
+
+  /** 群成员列表：白名单接口，30 条/页；最多拉 20 页（600 人）并告警截断。 */
+  private async getGroupMemberList(params: Record<string, unknown>, echo: unknown): Promise<OneBotResponse> {
+    const sender = this.deps.sender;
+    if (sender === null) return this.badRequest('机器人尚未连接', echo);
+    const groupOpenid = this.resolveGroup(params.group_id);
+    if (groupOpenid === null) return this.badRequest(`未知 group_id：${String(params.group_id ?? '')}`, echo);
+
+    const members: GroupMemberSnapshot[] = [];
+    const maxPages = 20;
+    let cursor: string | undefined;
+    let pages = 0;
+    try {
+      while (true) {
+        const page = await sender.listGroupMembers(groupOpenid, cursor);
+        members.push(...page.members);
+        pages += 1;
+        if (page.nextCursor === '') break;
+        if (pages >= maxPages) {
+          this.deps.logger.warn(
+            `[actions] get_group_member_list 超过 ${maxPages * 30} 人，仅返回前 ${members.length} 人（白名单接口 30 条/页）`,
+          );
+          break;
+        }
+        cursor = page.nextCursor;
+      }
+    } catch (err) {
+      return this.badRequest(`官方群成员列表接口不可用（需平台白名单权限）：${errText(err)}`, echo);
+    }
+
+    return this.ok(echo, members.map((member) => ({
+      group_id: params.group_id,
+      user_id: this.expose(member.memberOpenid),
+      nickname: member.username,
+      card: '',
+      role: normalizeRole(member.role),
+      join_time: parseRfc3339Seconds(member.joinedAt),
+      last_sent_time: 0,
+      is_robot: member.bot === true,
+    })));
+  }
+
+  /** 群成员批量移除（白名单）；reject_add_request → 同时加入群黑名单。 */
+  private async setGroupKick(params: Record<string, unknown>, echo: unknown): Promise<OneBotResponse> {
+    const sender = this.deps.sender;
+    if (sender === null) return this.badRequest('机器人尚未连接', echo);
+    const groupOpenid = this.resolveGroup(params.group_id);
+    if (groupOpenid === null) return this.badRequest(`未知 group_id：${String(params.group_id ?? '')}`, echo);
+    const userId = String(params.user_id ?? '');
+    if (userId === '') return this.badRequest('set_group_kick 需要 user_id', echo);
+    if (userId === this.selfIdString()) return this.badRequest('不能移除机器人自身', echo);
+    const memberOpenid = this.resolveUser(userId);
+    if (memberOpenid === null) {
+      return this.badRequest(`未知 user_id：${userId}（官方只接受已知 openid）`, echo);
+    }
+    const addToBlacklist = params.reject_add_request === true;
+    try {
+      const result = await sender.batchRemoveGroupMembers(groupOpenid, [memberOpenid], addToBlacklist);
+      const data: Record<string, unknown> = { removed: true };
+      if (addToBlacklist && result.failedBlacklistOpenids.includes(memberOpenid)) {
+        data.blacklist_failed = true;
+      }
+      return this.ok(echo, data);
+    } catch (err) {
+      return this.badRequest(`官方群成员移除接口不可用（需平台白名单权限）：${errText(err)}`, echo);
+    }
+  }
+
+  /** get_image / get_record：把官方附件 URL 落到本地缓存并返回路径。 */
+  private async getCachedMedia(
+    params: Record<string, unknown>,
+    echo: unknown,
+    label: string,
+  ): Promise<OneBotResponse> {
+    const cache = this.deps.mediaCache;
+    if (cache === undefined || cache === null) {
+      return this.badRequest(`${label}本地缓存代理未启用`, echo);
+    }
+    const file = String(params.file ?? '');
+    if (file === '') return this.badRequest(`get_image/get_record 需要 file 参数（附件 URL）`, echo);
+    try {
+      const result = await cache.fetch(file);
+      return this.ok(echo, {
+        file: result.path,
+        url: file,
+        size: result.size,
+        cached: result.cached,
+      });
+    } catch (err) {
+      return this.badRequest(errText(err), echo);
+    }
   }
 
   // —— 群管理（降级/对齐官方 2026.08）——
@@ -480,7 +711,11 @@ export class OneBotActionRouter {
   }
 
   private badRequest(message: string, echo: unknown): OneBotResponse {
-    return { status: 'failed', retcode: RET_BAD_REQUEST, data: null, message, echo };
+    return this.fail(RET_BAD_REQUEST, message, echo);
+  }
+
+  private fail(retcode: number, message: string, echo: unknown): OneBotResponse {
+    return { status: 'failed', retcode, data: null, message, echo };
   }
 
   private selfIdString(): string {
@@ -539,4 +774,16 @@ function errText(err: unknown): string {
     return code === undefined ? err.message : `${err.message}（平台错误码 ${code}）`;
   }
   return String(err);
+}
+
+/** 官方 member_role → OneBot role。 */
+function normalizeRole(role: string): 'owner' | 'admin' | 'member' {
+  return role === 'owner' || role === 'admin' ? role : 'member';
+}
+
+/** 官方 RFC3339 入群时间 → Unix 秒；缺失或非法返回 0。 */
+function parseRfc3339Seconds(value?: string): number {
+  if (value === undefined || value === '') return 0;
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? 0 : Math.floor(parsed / 1000);
 }

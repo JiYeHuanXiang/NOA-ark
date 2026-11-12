@@ -1,8 +1,8 @@
 # NOA-onebot 使用手册（动作与能力）
 
-> 对应实现：`src/onebot/actions.ts`（动作）、`src/onebot/events.ts`（事件）、`src/onebot/server.ts` / `reverse.ts`（通信）。
-> 版本：0.1.0（一期骨架）。能力边界与映射依据见 [文档.md](文档.md)。
-> 本手册描述**当前实现**（`src/onebot/actions.ts`，快照时间：2026-11-12）；`noa_*` 扩展只存在于规划稿 [文档.md](文档.md)，当前未实现。
+> 对应实现：`src/onebot/actions.ts`（动作）、`src/onebot/events.ts`（事件）、`src/noa/*`（noa/1 扩展）、`src/onebot/server.ts` / `reverse.ts`（通信）。
+> 版本：0.1.0。能力边界与映射依据见 [文档.md](文档.md)。
+> 本手册描述**当前实现**（快照时间：2026-11-12）；`noa_*` 扩展已实现但默认关闭，见 [文档.md](文档.md) 与 §5.7。
 
 ---
 
@@ -51,7 +51,7 @@ NOA-onebot **只提供 WebSocket**（HTTP API 与 HTTP POST 上报已移除）�
 
 ## 3. 动作总览
 
-### 3.1 可用（11 个）
+### 3.1 可用（19 个）
 
 | 动作 | 说明 | 限制 |
 |---|---|---|
@@ -59,32 +59,36 @@ NOA-onebot **只提供 WebSocket**（HTTP API 与 HTTP POST 上报已移除）�
 | `send_group_msg` | 发群消息 | 文本 + 富媒体；群必须已“见过” |
 | `send_private_msg` | 发单聊消息 | 文本 + 富媒体；用户必须先私聊过机器人 |
 | `get_login_info` | 机器人自身信息 | `nickname` 取官方 `username`，获取失败回退 `Arona` |
-| `get_version_info` | 适配器版本 | `protocol_version` = `v11` |
+| `get_status` | 网关真实在线状态 | `online` / `good` 来自官方 WSS READY/RESUMED，断线为 `false` |
+| `get_version_info` | 适配器版本 + noa/1 能力 | `protocol_version=v11`、`noa_ext_version=noa/1`、`noa_ext[]` |
 | `get_group_info` | 群基本信息 | 官方群信息优先（需白名单），失败回退本地目录；`source` 标明来源 |
 | `get_group_list` | 已知群列表 | 仅“见过”的群，非平台全量；`member_count` 恒为 0 |
+| `get_group_member_list` | 群成员列表 | 官方 2026-09-03 白名单接口（`11253` 无权限）；30 条/页，最多 20 页 |
+| `get_group_member_info` | 单个群成员 | 官方白名单接口；机器人自身直接返回 |
+| `set_group_kick` | 移除群成员 | 官方批量移除（白名单）；`reject_add_request=true` 同时拉黑 |
 | `set_group_add_request` | 入群申请审批 | 需官方群管理权限 |
 | `set_group_ban` | 群禁言 | 需官方权限；成员级接口未真机验证；省略 `user_id` 为全群路径（两种模式），`user_id=0` 仅 `mapped` 模式 |
 | `set_group_whole_ban` | 全员禁言 | 需官方权限；`enable=true` 固定 24 小时，`false` 解除 |
 | `delete_msg` | 撤回机器人自己发出的消息 | 仅 2 分钟内；消息必须由本进程发送（已自动写入缓存） |
+| `get_image` | 图片附件缓存 | 传附件 URL → 本地路径（单文件 ≤20MB） |
+| `get_record` | 语音附件缓存 | 同上 |
+| `can_send_image` | 固定 `{yes:true}` | 富媒体发送已接线 |
+| `can_send_record` | 固定 `{yes:true}` | 同上 |
 
-### 3.2 受限 / 占位（5 个）
+### 3.2 受限 / 占位（3 个）
 
 | 动作 | 现状 | 说明 |
 |---|---|---|
-| `get_status` | ⚠️ **占位** | 当前恒返回 `{online:true, good:true}`，**不能判断真实网关在线状态**；不要依赖它做健康检查 |
 | `get_msg` | 部分可用 | 本地缓存反查（容量 2000 条、保留 15 分钟），包含**入站消息**与本适配器**出站消息** |
-| `get_group_member_info` | 仅机器人自身 | 查询其他成员返回 `1404`（官方 2026-09-03 新增群成员信息接口，白名单/内邀，本适配器未接线） |
 | `set_restart` | 占位 | 返回 `status:"async"`，**不会实际重启进程** |
 | `clean_cache` | 占位 | 返回成功，**不执行实际清理** |
 
-### 3.3 明确拒绝（20 个，统一 `retcode=1404`）
+### 3.3 明确拒绝（16 个，统一 `retcode=1404`）
 
 | 动作 | 原因 |
 |---|---|
 | `get_friend_list` | 官方平台无好友列表 API |
 | `get_stranger_info` | 官方平台无陌生人信息 API |
-| `get_group_member_list` | 官方 2026-09-03 新增群成员列表接口（白名单/内邀），本适配器未接线 |
-| `set_group_kick` | 官方新增群成员批量移除（白名单），本适配器未接线 |
 | `set_group_admin` | 官方群机器人无管理员任免 API |
 | `set_group_card` | 官方群机器人无群名片 API |
 | `set_group_special_title` | 官方群机器人无专属头衔 API |
@@ -96,12 +100,12 @@ NOA-onebot **只提供 WebSocket**（HTTP API 与 HTTP POST 上报已移除）�
 | `get_group_honor_info` | 官方平台无群荣誉 API |
 | `get_cookies` / `get_csrf_token` / `get_credentials` | 官方开放平台无 Cookie/CSRF 体系 |
 | `get_forward_msg` | 官方平台无合并转发消息获取 API |
-| `get_image` / `get_record` | 本地媒体缓存代理二期实现 |
 | `set_friend_add_request` | 平台未向群/单聊机器人开放好友审批 |
 
 > 未出现在上表的动作名同样返回 `1404`（动作不存在）。`retcode=1404` 的 `message` 会写明具体原因，旧程序可据此优雅降级。
-> 发送含 `face` 段、群聊 `@具体成员` 或单聊任意 `at` 属于消息内容非法，返回 `1400`（不是 `1404`），见 §4.1。
-> 官方 2026-09-03 新增群成员列表/详情/批量移除/黑名单接口（白名单/内邀）；本适配器尚未接线，相关动作仍返回 `1404`。
+> 发送含 `face` 段、群聊 `@具体成员`（标准文本通道）或单聊任意 `at` 属于消息内容非法，返回 `1400`（不是 `1404`），见 §4.1。
+> 群成员列表/详情/批量移除接口仅白名单机器人可用；无权限时返回 `1400` 并带平台错误码 `11253`。
+> `noa_*` 扩展动作未启用时也返回 `1404`，见 §5.7。
 
 ---
 
@@ -136,9 +140,12 @@ NOA-onebot **只提供 WebSocket**（HTTP API 与 HTTP POST 上报已移除）�
 |---|---|
 | `text` | `msg_type=0` |
 | `at(qq=all)` | 群聊：拼进文本 `<qqbot-at-everyone />`（机器人需为群管理员；每群每天仅 1 次）；单聊：`1400` |
-| `at(qq=用户)` | 官方群聊的 @用户仅支持 markdown 消息 → 标准文本通道返回 `1400`（等 `noa_markdown`，见 文档）；单聊不支持 @ |
+| `at(qq=用户)` | 群聊：仅当同一消息含 `noa_markdown` 时转换为 `<qqbot-at-user id="openid" />`；标准文本通道返回 `1400`；单聊不支持 @ |
 | `reply` | 取消息缓存中的官方 `REFIDX` 填 `message_reference`；取不到时正文照发，`quoted=false` + `warning` |
 | `image` / `record` / `video` | 先上传得 `file_info`，再 `msg_type=7`；`file`/`url` 支持公网 URL、`base64://`、本地路径/`file://`（≤5MB） |
+| `noa_markdown` | `msg_type=2`；需 `noa.ext.markdown=true`；不能与 text/富媒体/卡片混排 |
+| `noa_keyboard` | 挂在 text / `noa_markdown` 上（官方 keyboard 字段）；需 `noa.ext.keyboard=true` |
+| `noa_card` | `msg_type=8` 图文卡片；需 `noa.ext.card=true`；必须单独发送 |
 
 **混排**：文本与富媒体会按原顺序拆成多条官方消息，每条各消耗一次被动槽。例如 `[text, image]` → 一条文本 + 一条图片，`message_ids` 返回两个号。
 
@@ -156,11 +163,13 @@ NOA-onebot **只提供 WebSocket**（HTTP API 与 HTTP POST 上报已移除）�
 - 群聊 `@具体成员`（`at(qq=<用户>)`）→ 官方只支持 markdown 消息，标准文本通道做不出真 @；
 - 单聊任意 `at` → 官方单聊不支持 @；
 - 含 `json` / `xml` / `music` / `share` / `contact` / `location` / `rps` / `dice` / `poke` / `shake` / `anonymous` / `forward` / `node` 等官方无对应能力的段；
-- 含 `noa_markdown` / `noa_keyboard` / `noa_ark` / `noa_embed` → 扩展尚未启用（规划见 [文档.md](文档.md)）；
+- 含 `noa_markdown` / `noa_keyboard` / `noa_card` 且对应 `noa.ext.*` 未启用；启用后按 [文档](文档.md) §3 的组合规则校验（如 keyboard 单独出现、markdown 与 text 混排都会 `1400`）；
 - 文本为空（纯空白也算空）；
 - 目标不在映射中（`未知 group_id/user_id`）；
 - 无被动窗口且 `passiveOverflow: "fail"`；
 - 富媒体上传/发送被平台拒绝（`message` 带平台错误码）。
+
+> `noa_ark` / `noa_embed` 在群/单聊无法发送，即使启用 noa/1 也返回 `1404`；图文卡片请用 `noa_card`。
 
 **示例**
 
@@ -187,16 +196,23 @@ NOA-onebot **只提供 WebSocket**（HTTP API 与 HTTP POST 上报已移除）�
 ### 4.3 `get_status`
 
 ```jsonc
-// 当前实现固定返回：{ "online": true, "good": true }
+// data: { "online": true, "good": true }
 ```
 
-⚠️ **占位实现**：适配器内部的发送器在启动后常驻，`get_status` 不会反映官方网关的真实断线状态，恒为 `true`。不要用它判断机器人是否在线；真实连接状态请以进程日志为准。代码修复（接入网关在线状态）列入后续计划。
+`online` / `good` 读取官方 WSS 网关真实状态：收到 `READY` 或 `RESUMED` 后为 `true`，连接断开立即为 `false`。可用于健康检查；网关重连期间可能短暂为 `false`。
 
 ### 4.4 `get_version_info`
 
 ```jsonc
-// data: { "app_name": "noa-ark", "app_version": "0.1.0", "protocol_version": "v11", "id_mode": "mapped" }
+// data: {
+//   "app_name": "noa-ark", "app_version": "0.1.0", "protocol_version": "v11",
+//   "id_mode": "mapped",
+//   "noa_ext_version": "noa/1",
+//   "noa_ext": ["markdown", "keyboard"]
+// }
 ```
+
+`noa_ext` 只列出当前配置启用的能力（关键字与 `noa.ext.*` 同名）；全部关闭时为空数组。
 
 ### 4.5 `get_group_info` / `get_group_list`
 
@@ -269,18 +285,72 @@ NOA-onebot **只提供 WebSocket**（HTTP API 与 HTTP POST 上报已移除）�
 
 返回本地缓存中的消息（最多 2000 条、保留 15 分钟），包含**入站消息**与本适配器**出站消息**；返回 `time` / `message_type` / `sender` / `message` / `raw_message`。缓存外的消息返回 `1400`。
 
-### 5.3 `get_group_member_info`
+### 5.3 群成员：`get_group_member_list` / `get_group_member_info` / `set_group_kick`
 
-仅支持查询机器人自身（`user_id` 等于 `self_id`）；查询其他成员返回 `1404`。
+官方面向白名单机器人开放（2026-09-03）。无权限时返回 `1400`，`message` 带平台错误码 `11253`。
 
-### 5.4 `can_send_image` / `can_send_record`
+```jsonc
+// 列表（30 条/页，适配器自动翻页，最多 20 页）
+{ "action": "get_group_member_list", "params": { "group_id": 10000000000001 } }
+// data: [{ group_id, user_id, nickname, card: "", role: "member|admin|owner", join_time, last_sent_time: 0, is_robot }]
+
+{ "action": "get_group_member_info", "params": { "group_id": 10000000000001, "user_id": 10000000000002 } }
+// data: { group_id, user_id, nickname, card: "", role, level: 0, title: "", join_time, is_robot }
+
+// 移除并同时加入群黑名单
+{ "action": "set_group_kick", "params": { "group_id": 10000000000001, "user_id": 10000000000002, "reject_add_request": true } }
+```
+
+- `user_id` 必须是本地映射中已知的 openid（该成员发过言、或在成员列表里出现过）；否则 `1400`。
+- `set_group_kick` 底层是官方批量移除接口（单次 ≤20），本动作一次移除 1 人；`reject_add_request=true` 映射为「同时加入群黑名单」，拉黑失败时回包 `data.blacklist_failed=true`，移除本身仍算成功。
+- 机器人自身信息不走官方接口，直接返回 `Arona` / `self_id`。
+- 列表超过 20 页（600 人）会截断并在日志告警。
+
+### 5.4 `get_image` / `get_record`
+
+```jsonc
+{ "action": "get_image", "params": { "file": "https://multimedia.nt.qq.com.cn/xxx" } }
+// data: { "file": "C:\\...\\data\\cache\\media\\<sha256>.png", "url": "https://...", "size": 12345, "cached": false }
+```
+
+- 入站图片/语音段的 `file` 就是官方附件 URL，把它传进来即可。
+- 适配器下载到 `data/cache/media/`（单文件 ≤20MB、20 秒超时），按 URL 哈希命名；同一 URL 再次调用直接命中本地文件（`cached=true`）。
+- 非 http/https URL、本机/内网字面量地址、重定向跳入内网、超过上限或下载失败 → `1400`。只做缓存代理，不修改附件内容；不做 DNS 解析后的 IP 固定（域名解析到内网的情况不拦截）。
+
+### 5.5 `can_send_image` / `can_send_record`
 
 返回 `{ "yes": true }`，且富媒体发送已接线（`msg_type=7`）：图片/语音/视频可发，支持公网 URL 与 ≤5MB 本地/`base64://`；更大的本地文件需改用 URL。详见 §4.1。
 
-### 5.5 `set_restart` / `clean_cache`
+### 5.6 `set_restart` / `clean_cache`
 
 - `set_restart` 返回 `{ "status": "async", "retcode": 1 }`，不执行重启。
 - `clean_cache` 返回成功，不做实际清理。
+
+### 5.7 noa/1 扩展动作（默认关闭）
+
+需在配置 `noa.ext.*` 显式启用；未启用时统一 `1404`。字段细节与平台约束见 [文档.md](文档.md) §5/§6。
+
+| 动作 | 开关 | 场景 | 说明 |
+|---|---|---|---|
+| `noa_send_typing` | `typing` | 单聊 | 「正在输入」1–60 秒（默认 8）；占一次被动槽 |
+| `noa_ack_interaction` | `interaction` | 全部 | 回应 `INTERACTION_CREATE`；`code` 0–5 |
+| `noa_set_menu` | `menu` | 单聊 | `menu` 对象原样透传，返回 `version` |
+| `noa_set_panel` / `noa_list_panels` | `menu` | 群/单聊 | `panel` 为官方 `POST /v2/panels` 请求体；列表需必填 `scope`（`c2c` / `group`），可选 `cursor` / `limit` |
+| `noa_set_group_add_request_policy` | `joinPolicy` | 群 | 启用/关闭自动审批、改白名单、`execute` 全量扫描 |
+| `noa_stream_begin` / `noa_stream_append` / `noa_stream_end` | `stream` | 单聊 | 流式消息；首帧返回 `stream_id`，后续帧传 `stream_id` |
+| `noa_send_wakeup` | `wakeup` | 单聊 | 互动召回（`is_wakeup=true`） |
+
+```jsonc
+{ "action": "noa_stream_begin", "params": { "user_id": 10000000000002, "content": "正在生成…" } }
+// data: { "stream_id": "a1b2...", "index": 1, "remain_msg_len": 1234, "passive": true }
+{ "action": "noa_stream_append", "params": { "stream_id": "a1b2...", "content": "正在生成…已完成" } }
+{ "action": "noa_stream_end", "params": { "stream_id": "a1b2...", "content": "最终全文" } }
+```
+
+- `input_mode=replace`（默认）时 `append` / `end` 的 `content` 必须以上一次已下发内容为前缀，否则 `1400` 并提示平台错误码 `40007`。
+- 同一流必须串行调用；上一帧未返回时再次调用返回 `1400`。
+- `noa_stream_begin` 的 `ref_idx` 当前不支持（官方流式接口没有引用参数），传入会 `1400`。
+- 流状态只在内存中，进程重启后旧 `stream_id` 失效。
 
 ---
 
@@ -294,7 +364,8 @@ NOA-onebot **只提供 WebSocket**（HTTP API 与 HTTP POST 上报已移除）�
 | `message` + `message_type=private`, `sub_type=friend` | 用户私聊机器人 | `at_me=false`、`to_me=true` |
 | `notice` `group_increase` | 机器人入群（`GROUP_ADD_ROBOT`）；成员入群需 intents `1<<24` | 机器人入群时 `user_id=self_id` |
 | `notice` `group_decrease` | 机器人被移出（`GROUP_DEL_ROBOT`）；成员退群需 intents `1<<24` | 机器人被移出为 `sub_type=kick_me`，成员退群为 `leave` |
-| `notice` 其他 noa 扩展 | 预留 | `noa_interaction` 等仅存在于规划稿 [文档.md](文档.md)，当前不会投递 |
+| `notice` `noa_interaction` | 用户点击按钮 / 快捷菜单（`INTERACTION_CREATE`） | 需 `noa.ext.interaction=true` 且 intents 含 `1<<26`；type 11/12 默认 3 秒内自动 ACK；字段见 文档 §4.1 |
+| `message_sent` | 适配器成功发出消息后 | `post_type="message_sent"`；带 `message_id` / `target_id` / `group_id` / `message` / `raw_message` |
 | `notice` `friend_add` | 好友添加完成 | 需平台权限 |
 | `request` `group` `sub_type=add` | 入群申请 | `flag` 供审批使用 |
 | `request` `friend` | 好友验证 | 需平台权限 |
@@ -304,8 +375,8 @@ NOA-onebot **只提供 WebSocket**（HTTP API 与 HTTP POST 上报已移除）�
 
 - **撤回通知**（`group_recall` / `friend_recall`）：官方平台不推送撤回事件；
 - `group_ban`、`group_upload`、`group_admin`、戳一戳、频道（guild）事件：一期未映射；
-- `input_notify`：它是**出站**字段，平台不推「正在输入」事件；未来以动作 `noa_send_typing` 提供（未实现）；
-- `INTERACTION_CREATE`（按钮互动）：规划为 `notice/noa_interaction`，需 Intent `1<<26`，当前未实现（见 [文档.md](文档.md)）。
+- `input_notify`（正在输入）：它是**出站**字段，平台不推对应事件；需要时由旧程序调用 `noa_send_typing`（§5.7）。
+- `INTERACTION_CREATE` 只有在 `noa.ext.interaction=true` 且 intents 含 `1<<26` 时才投递；否则不会产生 `noa_interaction` 事件。自动 ACK 可用 `noa.autoAckInteraction=false` 关闭。
 
 **成员进出事件**：映射已实现。适配器默认订阅 `1<<25 | 1<<24`；若机器人没有群成员事件权限，平台会以 `4013/4014` 拒绝 Identify，适配器自动回退到 `1<<25`（日志会告警），此时收不到成员事件，但消息收发不受影响。需要固定 intents 时在配置里写 `"intents": <整数>`（显式值不再自动回退）。
 
@@ -368,8 +439,12 @@ NOA-onebot **只提供 WebSocket**（HTTP API 与 HTTP POST 上报已移除）�
 | `retcode=1400 未知 user_id` | 用户尚未私聊过机器人 |
 | `retcode=1400 被动回复窗口已关闭` | 群 5 分钟/5 条或单聊 60 分钟/4 条用尽；改用 `passiveOverflow: "proactive"` 或等待 |
 | `retcode=1400` 且 message 含“5MB 直传上限” | 本地/base64 富媒体超过 5MB；改用公网 URL |
-| `retcode=1400` 且 message 含“@用户 / markdown” | 群聊 @具体成员需要 markdown 消息（未实现）；改成纯文本，或等 文档 B1 |
+| `retcode=1400` 且 message 含“@用户 / markdown” | 群聊 @具体成员只在 `noa_markdown` 消息中生效；启用 `noa.ext.markdown` 后加 `noa_markdown` 段，或改纯文本 |
 | `retcode=1400` 且 message 含“单聊不支持 @” | 单聊没有 @ 能力；去掉 at 段 |
+| 平台错误码 `11253` | 群成员/群信息接口仅白名单机器人可用；联系平台运营申请权限 |
+| `retcode=1404` 且 message 含“未启用” | 对应 `noa.ext.*` 开关为 `false`；按 文档 配置启用后重试 |
+| 流式返回平台 `40007` | `input_mode=replace` 时 `content` 不是累计全文；改成完整正文，或改用 `input_mode=append` |
+| 收不到 `noa_interaction` | `noa.ext.interaction` 未启用，或 `intents` 未包含 `1<<26`；显式设置 `intents=1<<25\|1<<24\|1<<26` |
 | `@全体成员` 发送失败 | 群聊 @全体需要机器人是群管理员，且每群每天仅 1 次；平台错误原样返回 |
 | `retcode=1400` 且 message 含“系统表情” | 官方表情标签仅文字子频道可用；群/单聊不要发 face 段 |
 | 回包 `retcode=0` 但 `quoted=false` | 引用目标不在缓存或无 REFIDX；正文已发送，只是没有引用气泡（同时带 `warning`） |
@@ -400,9 +475,26 @@ NOA-onebot **只提供 WebSocket**（HTTP API 与 HTTP POST 上报已移除）�
     "wsPort": 7791,
     "wsPath": "/ws",
     "reverseUrls": ["ws://127.0.0.1:6700"]
+  },
+  "noa": {
+    "ext": {
+      "markdown": true,
+      "keyboard": true,
+      "card": false,
+      "interaction": true,
+      "typing": false,
+      "menu": false,
+      "joinPolicy": false,
+      "stream": false,
+      "wakeup": false
+    },
+    "autoAckInteraction": true,
+    "interactionRaw": false
   }
 }
 ```
+
+> 启用互动事件时，`intents` 必须显式包含 `1<<26`：写十进制 `117440512`（`1<<25 | 1<<24 | 1<<26`）。`intents: 0` 只自动订阅 `1<<25 | 1<<24`，收不到 `INTERACTION_CREATE`；`npm run doctor` 会提示这一点。
 
 启动：
 
@@ -418,13 +510,16 @@ npm start
 
 ## 9. 已知限制（一期）
 
-1. 富媒体只支持公网 URL 与 ≤5MB 本地/`base64://` 直传，分片上传未实现；markdown/keyboard/图文卡片/按钮互动/流式/召回未实现（规划见 [文档.md](文档.md)）。群聊 @具体成员依赖 markdown，因此当前也明确失败（`1400`），群聊 @全体可用。
+1. 富媒体只支持公网 URL 与 ≤5MB 本地/`base64://` 直传，分片上传未实现。`noa/1` 扩展（markdown/keyboard/图文卡片/按钮互动/流式/召回）已实现但默认关闭；启用后群聊 @具体成员走 `noa_markdown`，标准文本通道仍明确失败（`1400`），群聊 @全体可用。
 2. `delete_msg` 只能撤回本进程发出、2 分钟内的消息（见 §5.1）。
 3. 成员进出事件随默认的 `1<<25 | 1<<24` 一起订阅；机器人无权限时平台 `4013/4014` 会触发自动回退 `1<<25`，此时收不到成员事件（见 §6.2）。
 4. 无 WebUI、配置热更新、文件日志；群目录不能手动加群/设别名。
-5. 官方 REST 路径（禁言/审批/媒体/群信息）与 token 端点尚未全部真机验证；群信息接口需要平台白名单权限。
+5. 官方 2026-09-03 新增的群成员/互动/菜单/流式接口尚未全部真机验证；群成员与群信息接口需要平台白名单权限。
 6. 正向 WS 只支持单一路径，不支持 `/api` + `/event` 分离模式。
 7. 接收侧 101/102/103 元素与卡片只做文本/附件降级，不生成 `reply` 段；C2C 事件的 `msg_elements`/`ark_data` 尚未展开（主要出现在全量群消息）。
 8. 全量群消息依赖群主在手机 QQ 手动开启；PC 端 QQ 暂无该入口。
+9. `message_sent` 是适配器自己广播的（包括触发本次发送的客户端也会收到）；旧程序需要按 `post_type` 过滤，避免把机器人自己的消息当成用户输入。
+10. 互动事件暂未使用官方的 `event_id` 被动回复通道：按钮点击后的回复仍走最近一条消息的被动窗口，窗口关闭且 `passiveOverflow=fail` 时会失败。`event_id` 支持列入下期。
+11. `noa_stream_begin` 不支持 `ref_idx`（官方流式接口无引用参数）；流状态只在内存，进程重启后失效。
 
 更完整的协议映射与下期计划见 [文档.md](文档.md)。

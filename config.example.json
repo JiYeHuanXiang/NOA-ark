@@ -13,5 +13,20 @@
     "enable": false,
     "port": 7792,
     "accessToken": ""
+  },
+  "noa": {
+    "ext": {
+      "markdown": false,
+      "keyboard": false,
+      "card": false,
+      "interaction": false,
+      "typing": false,
+      "menu": false,
+      "joinPolicy": false,
+      "stream": false,
+      "wakeup": false
+    },
+    "autoAckInteraction": true,
+    "interactionRaw": false
   }
 }

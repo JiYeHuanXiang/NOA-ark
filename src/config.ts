@@ -26,6 +26,30 @@ export interface MilkyConf {
   accessToken: string;
 }
 
+/**
+ * noa/1 扩展能力开关（文档 §2.4）。
+ * 全部默认关闭；未启用时对应段/动作按「能力不存在」明确失败。
+ */
+export interface NoaExtConf {
+  markdown: boolean;
+  keyboard: boolean;
+  card: boolean;
+  interaction: boolean;
+  typing: boolean;
+  menu: boolean;
+  joinPolicy: boolean;
+  stream: boolean;
+  wakeup: boolean;
+}
+
+export interface NoaConf {
+  ext: NoaExtConf;
+  /** 收到 INTERACTION_CREATE（type 11/12）时先自动 ACK code=0。 */
+  autoAckInteraction: boolean;
+  /** 事件里是否附带官方原始 d。 */
+  interactionRaw: boolean;
+}
+
 export interface NoaConfig {
   appId: string;
   appSecret: string;
@@ -48,7 +72,20 @@ export interface NoaConfig {
   logEnabled: boolean;
   onebot: OneBotConf;
   milky: MilkyConf;
+  noa: NoaConf;
 }
+
+export const DEFAULT_NOA_EXT: NoaExtConf = {
+  markdown: false,
+  keyboard: false,
+  card: false,
+  interaction: false,
+  typing: false,
+  menu: false,
+  joinPolicy: false,
+  stream: false,
+  wakeup: false,
+};
 
 export const DEFAULT_CONFIG: NoaConfig = {
   appId: '',
@@ -75,6 +112,11 @@ export const DEFAULT_CONFIG: NoaConfig = {
     enable: false,
     port: 7792,
     accessToken: '',
+  },
+  noa: {
+    ext: { ...DEFAULT_NOA_EXT },
+    autoAckInteraction: true,
+    interactionRaw: false,
   },
 };
 
@@ -133,7 +175,25 @@ export function validateConfig(config: NoaConfig): string[] {
   if (!Number.isInteger(config.botQpmLimit) || config.botQpmLimit <= 0) {
     warnings.push('botQpmLimit 必须是正整数');
   }
+  for (const [name, value] of Object.entries(config.noa?.ext ?? {})) {
+    if (typeof value !== 'boolean') warnings.push(`noa.ext.${name} 必须是布尔值`);
+  }
+  if (typeof config.noa?.autoAckInteraction !== 'boolean') {
+    warnings.push('noa.autoAckInteraction 必须是布尔值');
+  }
+  if (typeof config.noa?.interactionRaw !== 'boolean') {
+    warnings.push('noa.interactionRaw 必须是布尔值');
+  }
   return warnings;
+}
+
+function normalizeNoaExt(raw: unknown): NoaExtConf {
+  const source = isObject(raw) ? raw : {};
+  const ext = { ...DEFAULT_NOA_EXT };
+  for (const key of Object.keys(DEFAULT_NOA_EXT) as Array<keyof NoaExtConf>) {
+    if (typeof source[key] === 'boolean') ext[key] = source[key] as boolean;
+  }
+  return ext;
 }
 
 function normalize(config: NoaConfig): NoaConfig {
@@ -155,6 +215,12 @@ function normalize(config: NoaConfig): NoaConfig {
   if (!Number.isInteger(config.milky.port) || config.milky.port < 0 || config.milky.port > 65535) {
     config.milky.port = DEFAULT_CONFIG.milky.port;
   }
+  if (typeof config.noa !== 'object' || config.noa === null) {
+    config.noa = { ...DEFAULT_CONFIG.noa, ext: { ...DEFAULT_NOA_EXT } };
+  }
+  config.noa.ext = normalizeNoaExt(config.noa.ext);
+  if (typeof config.noa.autoAckInteraction !== 'boolean') config.noa.autoAckInteraction = true;
+  if (typeof config.noa.interactionRaw !== 'boolean') config.noa.interactionRaw = false;
   if (!Number.isInteger(config.dailyLimitPerPeer) || config.dailyLimitPerPeer <= 0) {
     config.dailyLimitPerPeer = DEFAULT_CONFIG.dailyLimitPerPeer;
   }
@@ -201,4 +267,9 @@ export function resolveCredentials(config: NoaConfig): { appId: string; appSecre
 export function maskedAppId(appId: string): string {
   if (appId.length <= 4) return appId === '' ? '(空)' : `${appId[0]}***`;
   return `${appId.slice(0, 4)}***${appId.slice(-2)}`;
+}
+
+/** 已启用的 noa/1 能力名（供 get_version_info 的 noa_ext 字段）。 */
+export function enabledNoaExt(ext: NoaExtConf): string[] {
+  return (Object.keys(ext) as Array<keyof NoaExtConf>).filter((key) => ext[key]);
 }

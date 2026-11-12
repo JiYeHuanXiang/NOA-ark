@@ -7,7 +7,7 @@
  */
 
 import path from 'node:path';
-import { loadConfig, resolveCredentials, maskedAppId, type NoaConfig } from './config.js';
+import { loadConfig, resolveCredentials, maskedAppId, enabledNoaExt, type NoaConfig } from './config.js';
 import { createConsoleLogger, redact } from './types.js';
 import { ensureDir, dataDir as resolveDataDir, safeSegment } from './store/json-store.js';
 import { IdMapper } from './core/idmap.js';
@@ -35,6 +35,12 @@ const USAGE = `noa-ark ${VERSION} — NOA 方舟计划：QQ 官方机器人 → 
 async function commandStart(argv: string[]): Promise<void> {
   const logger = createConsoleLogger(process.env.NOA_DEBUG === '1');
   const config = loadConfig(undefined, (message) => logger.warn(`配置：${message}`));
+  if (config.noa.ext.interaction && (config.intents & (1 << 26)) === 0) {
+    logger.warn(
+      'noa.ext.interaction 已启用，但 intents 未包含 1<<26（INTERACTION）；'
+      + '请显式设置 intents=1<<25|1<<24|1<<26，否则收不到 INTERACTION_CREATE 事件',
+    );
+  }
   const credentials = resolveCredentials(config);
   if (credentials === null) {
     logger.error('缺少机器人凭据：请设置 NOA_APP_ID / NOA_APP_SECRET 环境变量。');
@@ -119,6 +125,12 @@ function commandDoctor(): void {
   const config = loadConfig(undefined, (message) => console.warn(`配置：${message}`));
   const credentials = resolveCredentials(config);
   const root = resolveDataDir(config.dataDir || undefined);
+  const enabledExt = enabledNoaExt(config.noa.ext);
+  const noaExtLine = enabledExt.length === 0
+    ? '（全部关闭）'
+    : `${enabledExt.join(', ')}${config.noa.ext.interaction && (config.intents & (1 << 26)) === 0
+      ? '；⚠️ 需要 intents 包含 1<<26'
+      : ''}`;
 
   const lines = [
     `noa-ark 自检（${VERSION}）`,
@@ -133,9 +145,10 @@ function commandDoctor(): void {
     `5. OneBot v11：${config.onebot.enable ? `✅ ws://127.0.0.1:${config.onebot.wsPort}${config.onebot.wsPath}（正向 WS，HTTP API 已移除）` : '（关闭）'}`,
     `6. 反向 WS：${config.onebot.reverseUrls.length === 0 ? '（未配置）' : config.onebot.reverseUrls.join(', ')}`,
     `7. Milky v1.3：${config.milky.enable ? `✅ http://127.0.0.1:${config.milky.port}/api/:api` : '（关闭）'}`,
-    `8. 数据目录：${root}`,
-    `9. 映射文件：${path.join(root, 'registry', safeSegment(credentials?.appId ?? 'unbound'), 'groups.json')} 与 idmap.json`,
-    '10. 平台红线：不涉及协议逆向、不模拟客户端登录（仅官方开放平台能力）',
+    `8. noa/1 扩展：${noaExtLine}`,
+    `9. 数据目录：${root}`,
+    `10. 映射文件：${path.join(root, 'registry', safeSegment(credentials?.appId ?? 'unbound'), 'groups.json')} 与 idmap.json`,
+    '11. 平台红线：不涉及协议逆向、不模拟客户端登录（仅官方开放平台能力）',
   ];
   console.info(lines.join('\n'));
   if (credentials === null) process.exitCode = 1;

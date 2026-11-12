@@ -3,14 +3,23 @@ import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { IdMapper } from '../src/core/idmap.js';
-import { OneBotActionRouter, type CachedMessage, type MessageSender } from '../src/onebot/actions.js';
+import type { MediaCache } from '../src/core/media-cache.js';
+import {
+  OneBotActionRouter,
+  type ActionDeps,
+  type CachedMessage,
+  type MessageSender,
+} from '../src/onebot/actions.js';
 
 function tempIdMap(): IdMapper {
   const dir = mkdtempSync(path.join(os.tmpdir(), 'noa-actions-'));
   return new IdMapper({ file: path.join(dir, 'idmap.json') });
 }
 
-function makeRouter(overrides?: Partial<MessageSender>) {
+function makeRouter(
+  overrides?: Partial<MessageSender>,
+  extraDeps?: Partial<ActionDeps>,
+) {
   const mapper = tempIdMap();
   const sender: MessageSender = {
     sendGroupText: vi.fn(async () => ({ messageId: 'RAW_OUT_1', passive: true })),
@@ -27,6 +36,15 @@ function makeRouter(overrides?: Partial<MessageSender>) {
     recall: vi.fn(async () => undefined),
     setGroupBan: vi.fn(async () => undefined),
     approveGroupRequest: vi.fn(async () => undefined),
+    listGroupMembers: vi.fn(async () => ({ members: [], nextCursor: '' })),
+    getGroupMember: vi.fn(async () => ({
+      memberOpenid: 'USER_B',
+      username: 'Bob',
+      role: 'member',
+      bot: false,
+      joinedAt: '2025-08-20T09:15:00+08:00',
+    })),
+    batchRemoveGroupMembers: vi.fn(async () => ({ failedBlacklistOpenids: [] })),
     ...overrides,
   };
   const cache = new Map<string, CachedMessage>();
@@ -45,6 +63,7 @@ function makeRouter(overrides?: Partial<MessageSender>) {
     selfOpenid: 'BOT_OPENID',
     selfNickname: 'Arona',
     logger: { warn: () => undefined },
+    ...extraDeps,
   });
   return { router, sender, mapper, cache };
 }
@@ -293,9 +312,92 @@ describe('OneBotActionRouter', () => {
     expect(sender.recall).toHaveBeenCalledWith('group', 'GROUP_A', 'RAW_OUT_1');
   });
 
-  it('rejects set_group_kick with 1404', async () => {
-    const { router } = makeRouter();
-    const r = await router.dispatch('set_group_kick', { group_id: 1, user_id: 2 });
-    expect(r.retcode).toBe(1404);
+  it('lists group members through the whitelist API and paginates', async () => {
+    const pages: Record<string, { members: Array<{ memberOpenid: string; username: string; role: string; bot: boolean; joinedAt: string }>; nextCursor: string }> = {
+      '': {
+        members: [{ memberOpenid: 'USER_B', username: 'Bob', role: 'admin', bot: false, joinedAt: '2025-08-20T09:15:00+08:00' }],
+        nextCursor: 'CURSOR_2',
+      },
+      CURSOR_2: {
+        members: [{ memberOpenid: 'USER_C', username: 'Carol', role: 'owner', bot: false, joinedAt: '' }],
+        nextCursor: '',
+      },
+    };
+    const listGroupMembers = vi.fn(async (_group: string, cursor?: string) => pages[cursor ?? '']!);
+    const { router, mapper } = makeRouter({ listGroupMembers });
+    const groupId = Number(mapper.pseudoOf('GROUP_A'));
+    const r = await router.dispatch('get_group_member_list', { group_id: groupId });
+    expect(r.status).toBe('ok');
+    expect(listGroupMembers).toHaveBeenCalledTimes(2);
+    const list = r.data as Array<{ user_id: number; role: string; join_time: number }>;
+    expect(list).toHaveLength(2);
+    expect(list[0]!.role).toBe('admin');
+    expect(list[1]!.user_id).toBe(Number(mapper.pseudoOf('USER_C')));
+    expect(list[0]!.join_time).toBe(Math.floor(Date.parse('2025-08-20T09:15:00+08:00') / 1000));
+  });
+
+  it('returns official group member info and keeps the self fallback', async () => {
+    const { router, mapper } = makeRouter();
+    const groupId = Number(mapper.pseudoOf('GROUP_A'));
+    const userId = Number(mapper.pseudoOf('USER_B'));
+    const r = await router.dispatch('get_group_member_info', { group_id: groupId, user_id: userId });
+    expect(r.status).toBe('ok');
+    expect(r.data).toMatchObject({ nickname: 'Bob', role: 'member' });
+
+    const self = await router.dispatch('get_group_member_info', {
+      group_id: groupId,
+      user_id: Number(mapper.selfPseudo('BOT_OPENID')),
+    });
+    expect(self.data).toMatchObject({ nickname: 'Arona' });
+  });
+
+  it('kicks a member through batch remove and maps reject_add_request to blacklist', async () => {
+    const { router, mapper, sender } = makeRouter();
+    const groupId = Number(mapper.pseudoOf('GROUP_A'));
+    const userId = Number(mapper.pseudoOf('USER_B'));
+    const r = await router.dispatch('set_group_kick', {
+      group_id: groupId,
+      user_id: userId,
+      reject_add_request: true,
+    });
+    expect(r.status).toBe('ok');
+    expect(sender.batchRemoveGroupMembers).toHaveBeenCalledWith(
+      'GROUP_A',
+      [mapper.openidOf(String(userId))],
+      true,
+    );
+  });
+
+  it('reports the real gateway online state in get_status', async () => {
+    const { router } = makeRouter(undefined, { isOnline: () => false });
+    const r = await router.dispatch('get_status', {});
+    expect(r.data).toMatchObject({ online: false, good: false });
+  });
+
+  it('emits message_sent after a successful send', async () => {
+    const events: Array<Record<string, unknown>> = [];
+    const { router, mapper } = makeRouter(undefined, {
+      emitEvent: (event) => events.push(event as Record<string, unknown>),
+    });
+    const groupId = Number(mapper.pseudoOf('GROUP_A'));
+    await router.dispatch('send_group_msg', { group_id: groupId, message: 'hi' });
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      post_type: 'message_sent',
+      message_type: 'group',
+      group_id: groupId,
+      raw_message: 'hi',
+    });
+  });
+
+  it('caches media through get_image', async () => {
+    const fetchMedia = vi.fn(async () => ({ path: 'C:/tmp/a.png', size: 3, cached: false }));
+    const { router } = makeRouter(undefined, {
+      mediaCache: { fetch: fetchMedia } as unknown as MediaCache,
+    });
+    const r = await router.dispatch('get_image', { file: 'https://example.com/a.png' });
+    expect(r.status).toBe('ok');
+    expect(r.data).toMatchObject({ file: 'C:/tmp/a.png', url: 'https://example.com/a.png' });
+    expect(fetchMedia).toHaveBeenCalledWith('https://example.com/a.png');
   });
 });

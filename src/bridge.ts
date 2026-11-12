@@ -10,6 +10,7 @@ import type { Logger, OfficialScope } from './types.js';
 import { IdMapper } from './core/idmap.js';
 import { MsgSeqManager } from './core/msgseq.js';
 import { Quota } from './core/quota.js';
+import { MediaCache } from './core/media-cache.js';
 import {
   onebotToMilkySegments,
   segmentsToCQ,
@@ -17,12 +18,13 @@ import {
   type MilkySegment,
   type OutboundPart,
 } from './core/segments.js';
-import type { Rest } from './official/rest.js';
+import type { OfficialGroupMember, Rest } from './official/rest.js';
 import type { GatewayHandle, OfficialEventEnvelope } from './official/gateway.js';
 import {
   OneBotActionRouter,
   type CachedMessage,
   type GroupInfoSnapshot,
+  type GroupMemberSnapshot,
   type MessageCacheLike,
   type MessageSender,
   type SendPartsOptions,
@@ -34,6 +36,10 @@ import { startOneBotServer, type OneBotServerHandle } from './onebot/server.js';
 import { startReverseClients, type ReverseHandle } from './onebot/reverse.js';
 import { MilkyActionRouter } from './milky/actions.js';
 import { startMilkyServer, type MilkyServerHandle } from './milky/server.js';
+import { interactionToNoaEvent } from './noa/events.js';
+import { JoinStrategyStore } from './noa/join-policy.js';
+import { NoaActionRouter } from './noa/router.js';
+import { NoaExtensionService } from './noa/service.js';
 
 // —— 群目录 ——————————————————————————————
 
@@ -245,8 +251,34 @@ class BridgeSender implements MessageSender {
   }
 
   /**
+   * 领取一次发送名额：优先被动窗口（msg_id + 递增 msg_seq），否则按配置转主动配额。
+   * 发送失败不记账；主动消息在发送成功后再调用 recordProactive。
+   */
+  reserve(
+    scope: OfficialScope,
+    targetOpenid: string,
+  ): { msgId?: string; msgSeq?: number; passive: boolean } {
+    const rawMsgId = this.lastPassive.get(`${scope}:${targetOpenid}`);
+    if (rawMsgId !== undefined) {
+      const decision = this.deps.msgseq.acquire(rawMsgId, scope);
+      if (decision.passive) return { msgId: rawMsgId, msgSeq: decision.msgSeq, passive: true };
+    }
+    if (this.deps.passiveOverflow !== 'proactive') {
+      throw new Error('被动回复窗口已关闭（群 5 分钟/5 条、单聊 60 分钟/4 条）；如需主动消息请设置 passiveOverflow=proactive');
+    }
+    const check = this.deps.quota.check(scope, targetOpenid, 1);
+    if (!check.ok) throw new Error(check.message ?? '本地主动消息配额受限');
+    return { passive: false };
+  }
+
+  /** 主动消息发送成功后记账（平台判定优先于本地估算）。 */
+  recordProactive(scope: OfficialScope, targetOpenid: string): void {
+    this.deps.quota.record(scope, targetOpenid, this.deps.now());
+  }
+
+  /**
    * 按顺序发送分片：先上传富媒体（失败不消耗回复次数），再逐条领取被动槽。
-   * 图片/语音/视频各占一条官方消息，因此文本+图片会拆成多条发送。
+   * 文本 / markdown / 图文卡片 / 富媒体各占一条官方消息，因此混合内容会拆成多条发送。
    */
   private async sendParts(
     scope: OfficialScope,
@@ -254,8 +286,6 @@ class BridgeSender implements MessageSender {
     parts: readonly OutboundPart[],
     options?: SendPartsOptions,
   ): Promise<SendPartsResult> {
-    const rawMsgId = this.lastPassive.get(`${scope}:${targetOpenid}`);
-    let passiveAvailable = rawMsgId !== undefined;
     let refAttached = false;
     let allPassive = true;
     const sent: SentMessagePart[] = [];
@@ -269,31 +299,48 @@ class BridgeSender implements MessageSender {
         )
         : null;
 
-      let msgSeq: number | null = null;
-      if (passiveAvailable && rawMsgId !== undefined) {
-        const decision = this.deps.msgseq.acquire(rawMsgId, scope);
-        if (decision.passive) msgSeq = decision.msgSeq;
-        else passiveAvailable = false;
-      }
-      if (msgSeq === null) {
-        if (this.deps.passiveOverflow !== 'proactive') {
-          throw new Error('被动回复窗口已关闭（群 5 分钟/5 条、单聊 60 分钟/4 条）；如需主动消息请设置 passiveOverflow=proactive');
-        }
-        const check = this.deps.quota.check(scope, targetOpenid, 1);
-        if (!check.ok) throw new Error(check.message ?? '本地主动消息配额受限');
-        allPassive = false;
-      }
+      const grant = this.reserve(scope, targetOpenid);
+      if (!grant.passive) allPassive = false;
 
       const refIdx: string | undefined = !refAttached && options?.refIdx !== undefined && options.refIdx !== ''
         ? options.refIdx
         : undefined;
-      const sendOptions = msgSeq !== null
-        ? { msgId: rawMsgId!, msgSeq, refIdx }
-        : { refIdx };
-      const resp = part.kind === 'text'
-        ? await this.deps.rest.sendText({ scope, targetId: targetOpenid }, part.text, sendOptions)
-        : await this.deps.rest.sendRichMedia({ scope, targetId: targetOpenid }, prepared!.fileInfo, '', sendOptions);
-      if (msgSeq === null) this.deps.quota.record(scope, targetOpenid, this.deps.now());
+      const sendOptions = {
+        ...(grant.msgId === undefined ? {} : { msgId: grant.msgId, msgSeq: grant.msgSeq }),
+        ...(refIdx === undefined ? {} : { refIdx }),
+        ...(part.kind === 'text' || part.kind === 'markdown'
+          ? (part.keyboard === undefined
+            ? {}
+            : { keyboard: part.keyboard as unknown as Record<string, unknown> })
+          : {}),
+      };
+
+      let resp;
+      switch (part.kind) {
+        case 'text':
+          resp = await this.deps.rest.sendText({ scope, targetId: targetOpenid }, part.text, sendOptions);
+          break;
+        case 'markdown':
+          resp = await this.deps.rest.sendMarkdown({ scope, targetId: targetOpenid }, part.content, sendOptions);
+          break;
+        case 'card':
+          resp = await this.deps.rest.sendCard(
+            { scope, targetId: targetOpenid },
+            part.card as unknown as { type: string; content: Record<string, unknown> },
+            sendOptions,
+          );
+          break;
+        case 'media':
+          resp = await this.deps.rest.sendRichMedia(
+            { scope, targetId: targetOpenid },
+            prepared!.fileInfo,
+            '',
+            sendOptions,
+          );
+          break;
+      }
+
+      if (!grant.passive) this.recordProactive(scope, targetOpenid);
       refAttached = refIdx !== undefined;
       sent.push({
         messageId: String(resp.id ?? resp.message_ids?.[0] ?? ''),
@@ -315,6 +362,40 @@ class BridgeSender implements MessageSender {
   async approveGroupRequest(groupOpenid: string, requestId: string, approve: boolean): Promise<void> {
     await this.deps.rest.setGroupAddRequest({ eventSeq: requestId, groupId: groupOpenid, approve });
   }
+
+  async listGroupMembers(
+    groupOpenid: string,
+    cursor?: string,
+  ): Promise<{ members: GroupMemberSnapshot[]; nextCursor: string }> {
+    const page = await this.deps.rest.listGroupMembers(groupOpenid, cursor);
+    return { members: page.members.map(toGroupMemberSnapshot), nextCursor: page.nextCursor };
+  }
+
+  async getGroupMember(groupOpenid: string, memberOpenid: string): Promise<GroupMemberSnapshot> {
+    return toGroupMemberSnapshot(await this.deps.rest.getGroupMember(groupOpenid, memberOpenid));
+  }
+
+  async batchRemoveGroupMembers(
+    groupOpenid: string,
+    memberOpenids: readonly string[],
+    addToBlacklist: boolean,
+  ): Promise<{ failedBlacklistOpenids: string[] }> {
+    const result = await this.deps.rest.batchRemoveGroupMembers(groupOpenid, memberOpenids, addToBlacklist);
+    if (result.result !== 'success') {
+      throw new Error(`官方批量移除成员返回 ${result.result === '' ? '空结果' : result.result}`);
+    }
+    return { failedBlacklistOpenids: result.failedBlacklistOpenids };
+  }
+}
+
+function toGroupMemberSnapshot(member: OfficialGroupMember): GroupMemberSnapshot {
+  return {
+    memberOpenid: member.memberOpenid,
+    username: member.username,
+    role: member.role,
+    bot: member.bot,
+    joinedAt: member.joinedAt,
+  };
 }
 
 /** OneBot 富媒体段 → 官方 file_type：1 图片 / 2 视频 / 3 语音。 */
@@ -400,6 +481,19 @@ export async function startBridge(options: BridgeOptions): Promise<BridgeHandle>
     logger,
     now,
   });
+  const mediaCache = new MediaCache({ dir: path.join(dataDir, 'cache', 'media') });
+  const strategyStore = new JoinStrategyStore(
+    path.join(dataDir, 'registry', safeSegment(appId), 'join-policy.json'),
+    logger,
+  );
+  const noaService = new NoaExtensionService({ rest, sender, strategyStore, logger });
+  const noaRouter = new NoaActionRouter({
+    conf: config.noa,
+    service: noaService,
+    mapper,
+    idMode,
+    logger,
+  });
 
   const onebotRouter = new OneBotActionRouter({
     idMode,
@@ -410,6 +504,11 @@ export async function startBridge(options: BridgeOptions): Promise<BridgeHandle>
     selfOpenid: selfSeed,
     selfNickname,
     logger,
+    isOnline: () => gateway.online,
+    mediaCache,
+    noaConf: config.noa,
+    noa: noaRouter,
+    emitEvent: emitOneBot,
   });
   const milkyRouter = new MilkyActionRouter({
     sender,
@@ -457,13 +556,13 @@ export async function startBridge(options: BridgeOptions): Promise<BridgeHandle>
     });
   }
 
-  const emitOneBot = (event: unknown): void => {
+  function emitOneBot(event: unknown): void {
     if (onebot !== undefined) {
       void onebot.broadcast(event);
     } else {
       reverse?.broadcast(event);
     }
-  };
+  }
 
   gateway.onEvent((envelope) => {
     try {
@@ -475,6 +574,11 @@ export async function startBridge(options: BridgeOptions): Promise<BridgeHandle>
 
   function handleOfficialEvent(envelope: OfficialEventEnvelope): void {
     const { eventType, data } = envelope;
+
+    if (eventType === 'INTERACTION_CREATE') {
+      handleInteraction(data);
+      return;
+    }
 
     const isMessageEvent = eventType === 'GROUP_AT_MESSAGE_CREATE'
       || eventType === 'GROUP_MESSAGE_CREATE'
@@ -550,6 +654,38 @@ export async function startBridge(options: BridgeOptions): Promise<BridgeHandle>
       rawMessage: event.raw_message,
       tsMs: event.time * 1000,
     });
+  }
+
+  /**
+   * INTERACTION_CREATE → noa_interaction（仅 noa.ext.interaction 启用时投递）。
+   *
+   * type 11/12 默认先 ACK code=0：官方要求 3 秒内回应，否则客户端持续 loading。
+   * ACK 失败只告警，不阻塞事件投递。
+   */
+  function handleInteraction(data: Record<string, unknown>): void {
+    if (!config.noa.ext.interaction) {
+      logger.debug?.('[bridge] 收到 INTERACTION_CREATE，但 noa.ext.interaction 未启用，已忽略');
+      return;
+    }
+    const event = interactionToNoaEvent(data, {
+      mapper,
+      idMode,
+      selfOpenid: selfSeed,
+      interactionRaw: config.noa.interactionRaw,
+      now,
+    });
+    if (event === null) {
+      logger.warn('[bridge] INTERACTION_CREATE 缺少 id，无法回应');
+      return;
+    }
+    const interactionId = readString(data.id);
+    const type = typeof data.type === 'number' ? data.type : Number(data.type);
+    if (config.noa.autoAckInteraction && (type === 11 || type === 12) && interactionId !== '') {
+      void rest.ackInteraction(interactionId, 0).catch((err: unknown) => {
+        logger.warn(`[bridge] 自动回应互动失败：${err instanceof Error ? err.message : String(err)}`);
+      });
+    }
+    emitOneBot(event);
   }
 
   function emitMilky(eventType: string, data: Record<string, unknown>): void {
