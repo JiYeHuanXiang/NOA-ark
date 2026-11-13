@@ -524,18 +524,26 @@ export async function startBridge(options: BridgeOptions): Promise<BridgeHandle>
   let reverse: ReverseHandle | undefined;
   let milky: MilkyServerHandle | undefined;
 
-  if (config.onebot.enable) {
+  const onebotConf = config.onebot;
+  const wantForward = onebotConf.enable && onebotConf.mode !== 'reverse';
+  const wantReverse = onebotConf.enable
+    && onebotConf.mode !== 'forward'
+    && onebotConf.reverseUrls.length > 0;
+
+  if (wantReverse) {
     reverse = startReverseClients({
-      urls: config.onebot.reverseUrls,
+      urls: onebotConf.reverseUrls,
       logger,
       selfId: selfIdValue,
       now,
       dispatch: (action, params, echo) => onebotRouter.dispatch(action, params, echo),
-      accessToken: config.onebot.accessToken === '' ? undefined : config.onebot.accessToken,
+      accessToken: onebotConf.accessToken === '' ? undefined : onebotConf.accessToken,
     });
+  }
+  if (wantForward) {
     try {
       onebot = await startOneBotServer({
-        conf: config.onebot,
+        conf: onebotConf,
         logger,
         selfId: selfIdValue,
         now,
@@ -547,10 +555,13 @@ export async function startBridge(options: BridgeOptions): Promise<BridgeHandle>
         ],
       });
     } catch (err) {
-      reverse.close();
+      reverse?.close();
       reverse = undefined;
       throw err;
     }
+  }
+  if (onebotConf.enable && !wantForward && !wantReverse) {
+    logger.warn('onebot 已启用但没有可用的 WS 通道：mode=reverse 且 reverseUrls 为空');
   }
 
   if (config.milky.enable) {

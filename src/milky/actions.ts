@@ -1,5 +1,5 @@
 /**
- * Milky v1.3 Action 路由（文档 §4.3）。
+ * Milky v1.3 Action 路由。
  *
  * 复用 OneBot 层的 MessageSender 抽象；响应结构：
  *   { status: 'ok' | 'failed', retcode, data, message? }

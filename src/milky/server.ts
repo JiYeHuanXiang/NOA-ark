@@ -1,5 +1,5 @@
 /**
- * Milky v1.3 通信服务器（文档 §4.1）：
+ * Milky v1.3 通信服务器：
  *
  *   - POST /api/:api       API 调用（JSON 入参）
  *   - GET  /event          SSE（默认）；带 Upgrade: websocket 时升级为 WS

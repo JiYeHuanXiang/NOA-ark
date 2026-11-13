@@ -200,6 +200,33 @@ describe('dsh takeover runtime', () => {
     expect(runtime.shouldSuppressDshMessage({ eventType: 'C2C_MESSAGE_CREATE', data: {} })).toBe(false);
   }, 15_000);
 
+  it('rebuilds OneBot when volatile WS settings change', async () => {
+    const config = parseConfig({
+      baseUrl,
+      tokenBaseUrl: baseUrl,
+      dataDir: dir,
+      onebot: { enable: true, wsPort: 0, wsPath: '/ws', reverseUrls: [] },
+      milky: { enable: false },
+    });
+    runtime = new TakeoverRuntime(config, takeoverConf, logger);
+    runtime.onBot({ appId: 'APP_ID', appSecret: 'APP_SECRET' });
+    const first = await waitFor(() => runtime!.onebotUrl);
+
+    runtime.applyConfig(parseConfig({
+      baseUrl,
+      tokenBaseUrl: baseUrl,
+      dataDir: dir,
+      onebot: { enable: true, wsPort: 0, wsPath: '/ws2', reverseUrls: [] },
+      milky: { enable: false },
+    }));
+
+    const second = await waitFor(() => {
+      const url = runtime!.onebotUrl;
+      return url !== undefined && url !== first ? url : undefined;
+    });
+    expect(second.endsWith('/ws2')).toBe(true);
+  }, 15_000);
+
   it('suppresses dsh during the startup window when isolation is always', async () => {
     const config = parseConfig({
       baseUrl,

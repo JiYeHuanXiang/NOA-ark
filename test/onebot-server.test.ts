@@ -32,6 +32,7 @@ function nextJson(ws: WebSocket, predicate?: (data: Record<string, unknown>) => 
 function makeConf() {
   return {
     enable: true,
+    mode: 'both' as const,
     accessToken: 't0ken',
     wsPort: 0,
     wsPath: '/ws',

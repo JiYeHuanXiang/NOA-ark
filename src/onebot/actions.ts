@@ -669,7 +669,7 @@ export class OneBotActionRouter {
 
   /**
    * 全员禁言：官方禁言接口省略 member_openid 即全群路径。
-   * OneBot 标准只有 enable；enable=true 固定 24 小时（与 Milky set_group_whole_mute 一致）。
+   * OneBot 标准只有 enable；enable=true 固定 24 小时。
    */
   private async setGroupWholeBan(params: Record<string, unknown>, echo: unknown): Promise<OneBotResponse> {
     const sender = this.deps.sender;

@@ -12,8 +12,8 @@ NOA-onebot **只提供 WebSocket**（HTTP API 与 HTTP POST 上报已移除）�
 
 | 方式 | 说明 |
 |---|---|
-| 反向 WS（推荐） | 适配器主动连接旧程序，配置 `onebot.reverseUrls[]`（如 `ws://127.0.0.1:6700`）。连上后立即推送 lifecycle，之后双向收发。 |
-| 正向 WS | 旧程序连接 `ws://127.0.0.1:7791/ws`（端口/路径由 `onebot.wsPort` / `onebot.wsPath` 决定）。 |
+| 反向 WS（推荐） | 适配器主动连接旧程序，配置 `onebot.reverseUrls[]`（如 `ws://127.0.0.1:6700`）。`onebot.mode` 为 `forward` 时不连接。 |
+| 正向 WS | 旧程序连接 `ws://127.0.0.1:7791/ws`（端口/路径由 `onebot.wsPort` / `onebot.wsPath` 决定）。`onebot.mode` 为 `reverse` 时不监听。 |
 | 普通 HTTP | 一律返回 `426 Upgrade Required`，没有 HTTP API。 |
 
 **鉴权**：`Authorization: Bearer <accessToken>` 或 `?access_token=<accessToken>`；`accessToken` 为空表示不鉴权（仅限本机）。
@@ -256,7 +256,7 @@ NOA-onebot **只提供 WebSocket**（HTTP API 与 HTTP POST 上报已移除）�
 { "action": "set_group_whole_ban", "params": { "group_id": 10000000000001, "enable": false } }
 ```
 
-- OneBot 标准只有 `enable`，没有 `duration`：`true` 固定 24 小时，`false` 为 0 秒解除（与 Milky `set_group_whole_mute` 一致）。
+- OneBot 标准只有 `enable`，没有 `duration`：`true` 固定 24 小时，`false` 为 0 秒解除。
 - 走官方禁言接口的全群路径（不带 `member_openid`）；需要官方权限。
 - 回包 `data` 为 `null`。
 
@@ -471,6 +471,7 @@ NOA-onebot **只提供 WebSocket**（HTTP API 与 HTTP POST 上报已移除）�
   "intents": 0,
   "onebot": {
     "enable": true,
+    "mode": "both",
     "accessToken": "change-me",
     "wsPort": 7791,
     "wsPath": "/ws",

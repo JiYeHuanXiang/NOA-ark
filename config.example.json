@@ -4,15 +4,11 @@
   "intents": 0,
   "onebot": {
     "enable": true,
+    "mode": "both",
     "accessToken": "",
     "wsPort": 7791,
     "wsPath": "/ws",
     "reverseUrls": []
-  },
-  "milky": {
-    "enable": false,
-    "port": 7792,
-    "accessToken": ""
   },
   "noa": {
     "ext": {

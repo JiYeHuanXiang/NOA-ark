@@ -4,7 +4,7 @@
  * 入站：官方 content（含 `<qqbot-at-user id="..."/>`）+ attachments → 段数组/CQ 串。
  * 出站：OneBot v11 段数组（或 CQ 串）/ Milky 段 → 官方文本与富媒体上传请求。
  *
- * 能力边界（文档 §3.4 / §4.4 / §5）：
+ * 能力边界（文档 §3.4 / §4）：
  *   - 官方无原生 json/xml/markdown 接收，无合并转发（node/forward）；
  *   - noa_markdown / noa_keyboard / noa_card / noa_ark / noa_embed 是 noa 私有扩展段，
  *     仅在 OneBot 侧 opt-in 使用，不参与跨协议转换；

@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { WebSocket, WebSocketServer } from 'ws';
 import { parseConfig } from '../src/config.js';
 import { IdMapper } from '../src/core/idmap.js';
-import { RecentIdSet, startBridge } from '../src/bridge.js';
+import { RecentIdSet, startBridge, type BridgeHandle } from '../src/bridge.js';
 import type { GatewayHandle, OfficialEventEnvelope } from '../src/official/gateway.js';
 import type { Rest } from '../src/official/rest.js';
 
@@ -20,6 +20,7 @@ interface Harness {
   wsServer: WebSocketServer;
   appPort: number;
   gateway: GatewayHandle;
+  bridge: BridgeHandle;
   emit: (event: OfficialEventEnvelope) => void;
   restCalls: Array<{ target: { scope: string; targetId: string }; text: string; options?: unknown }>;
   close: () => Promise<void>;
@@ -52,7 +53,7 @@ function nextJson(ws: WebSocket, predicate?: (data: Record<string, unknown>) => 
   });
 }
 
-async function setup(): Promise<Harness> {
+async function setup(mode: 'forward' | 'reverse' | 'both' = 'both'): Promise<Harness> {
   const dir = mkdtempSync(path.join(os.tmpdir(), 'noa-bridge-'));
 
   // 模拟「旧 OneBot 程序」：一个反向 WS 服务端。
@@ -92,6 +93,7 @@ async function setup(): Promise<Harness> {
     passiveOverflow: 'fail',
     onebot: {
       enable: true,
+      mode,
       accessToken: '',
       wsPort: 0,
       wsPath: '/ws',
@@ -122,6 +124,7 @@ async function setup(): Promise<Harness> {
     wsServer,
     appPort,
     gateway,
+    bridge,
     restCalls,
     emit: (event) => {
       for (const listener of listeners) listener(event);
@@ -152,6 +155,30 @@ describe('RecentIdSet', () => {
     const set = new RecentIdSet(2, 1000, () => 0);
     expect(set.add('')).toBe(true);
     expect(set.add('')).toBe(true);
+  });
+});
+
+describe('onebot.mode', () => {
+  it('reverse 模式只拨 reverseUrls，不监听正向端口', async () => {
+    const harness = await setup('reverse');
+    expect(harness.bridge.onebot).toBeUndefined();
+    expect(harness.bridge.reverse).toBeDefined();
+
+    const app = await new Promise<WebSocket>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('反向 WS 未连接')), 5000);
+      harness.wsServer.once('connection', (ws) => {
+        clearTimeout(timer);
+        resolve(ws);
+      });
+    });
+    cleanups.push(() => app.terminate());
+    expect((await nextJson(app)).meta_event_type).toBe('lifecycle');
+  });
+
+  it('forward 模式只监听正向端口，不拨 reverseUrls', async () => {
+    const harness = await setup('forward');
+    expect(harness.bridge.onebot).toBeDefined();
+    expect(harness.bridge.reverse).toBeUndefined();
   });
 });
 

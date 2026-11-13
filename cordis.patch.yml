@@ -16,6 +16,7 @@
         passiveOverflow: fail
         onebot:
           enable: true
+          mode: both
           accessToken: ''
           wsPort: 7791
           wsPath: /ws

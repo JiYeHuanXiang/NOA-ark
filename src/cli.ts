@@ -1,7 +1,7 @@
 /**
  * noa-ark CLI
  *
- *   noa-ark start    连接官方 QQ 网关并启动 OneBot v11 / Milky 兼容层
+ *   noa-ark start    连接官方 QQ 网关并启动 OneBot v11 兼容层
  *   noa-ark doctor   打印配置、凭据、端口与数据目录自检
  *   noa-ark version
  */
@@ -16,10 +16,10 @@ import { connectGateway } from './official/gateway.js';
 import { startBridge } from './bridge.js';
 import { VERSION } from './version.js';
 
-const USAGE = `noa-ark ${VERSION} — NOA 方舟计划：QQ 官方机器人 → OneBot v11 / Milky 兼容层
+const USAGE = `noa-ark ${VERSION} — NOA 方舟计划：QQ 官方机器人 → OneBot v11 兼容层
 
 用法：
-  noa-ark start      连接官方网关并启动 OneBot v11 / Milky 服务
+  noa-ark start      连接官方网关并启动 OneBot v11 服务
   noa-ark doctor     自检：配置 / 凭据 / 端口 / 数据目录
   noa-ark version    显示版本
   noa-ark help       显示帮助
@@ -90,9 +90,12 @@ async function commandStart(argv: string[]): Promise<void> {
   logger.info(`AppID：${maskedAppId(credentials.appId)}`);
   if (bridge.onebot !== undefined) {
     logger.info(`OneBot v11：${bridge.onebot.url}（正向 WS；HTTP API 已移除）`);
-    if (config.onebot.reverseUrls.length > 0) {
-      logger.info(`OneBot 反向 WS：${config.onebot.reverseUrls.join(', ')}`);
-    }
+  }
+  if (bridge.reverse !== undefined) {
+    logger.info(`OneBot 反向 WS：${config.onebot.reverseUrls.join(', ')}`);
+  }
+  if (config.onebot.enable && bridge.onebot === undefined && bridge.reverse === undefined) {
+    logger.warn(`OneBot 未开放任何 WS 通道（mode=${config.onebot.mode}，reverseUrls 为空）`);
   }
   if (bridge.milky !== undefined) {
     logger.info(`Milky v1.3：${bridge.milky.url}/api/:api + /event`);
@@ -142,13 +145,18 @@ function commandDoctor(): void {
     `4. 被动超窗策略：${config.passiveOverflow}；网关 intents：${config.intents > 0
       ? String(config.intents)
       : '自动（1<<25 | 1<<24，平台 4014 时回退 1<<25）'}`,
-    `5. OneBot v11：${config.onebot.enable ? `✅ ws://127.0.0.1:${config.onebot.wsPort}${config.onebot.wsPath}（正向 WS，HTTP API 已移除）` : '（关闭）'}`,
-    `6. 反向 WS：${config.onebot.reverseUrls.length === 0 ? '（未配置）' : config.onebot.reverseUrls.join(', ')}`,
-    `7. Milky v1.3：${config.milky.enable ? `✅ http://127.0.0.1:${config.milky.port}/api/:api` : '（关闭）'}`,
-    `8. noa/1 扩展：${noaExtLine}`,
-    `9. 数据目录：${root}`,
-    `10. 映射文件：${path.join(root, 'registry', safeSegment(credentials?.appId ?? 'unbound'), 'groups.json')} 与 idmap.json`,
-    '11. 平台红线：不涉及协议逆向、不模拟客户端登录（仅官方开放平台能力）',
+    `5. OneBot v11：${config.onebot.enable
+      ? `模式 ${config.onebot.mode}${config.onebot.mode === 'reverse'
+        ? ''
+        : `；正向 ws://127.0.0.1:${config.onebot.wsPort}${config.onebot.wsPath}`}（HTTP API 已移除）`
+      : '（关闭）'}`,
+    `6. 反向 WS：${config.onebot.mode === 'forward' || config.onebot.reverseUrls.length === 0
+      ? '（未配置）'
+      : config.onebot.reverseUrls.join(', ')}`,
+    `7. noa/1 扩展：${noaExtLine}`,
+    `8. 数据目录：${root}`,
+    `9. 映射文件：${path.join(root, 'registry', safeSegment(credentials?.appId ?? 'unbound'), 'groups.json')} 与 idmap.json`,
+    '10. 平台红线：不涉及协议逆向、不模拟客户端登录（仅官方开放平台能力）',
   ];
   console.info(lines.join('\n'));
   if (credentials === null) process.exitCode = 1;

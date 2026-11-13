@@ -10,9 +10,12 @@ import { configPath } from './store/json-store.js';
 
 export type IdMode = 'mapped' | 'passthrough';
 export type PassiveOverflow = 'fail' | 'proactive';
+/** OneBot WS 工作模式：正向（服务端）/ 反向（客户端）/ 两者同时。 */
+export type WsMode = 'forward' | 'reverse' | 'both';
 
 export interface OneBotConf {
   enable: boolean;
+  mode: WsMode;
   accessToken: string;
   /** WS 监听端口（正向 WebSocket；HTTP API 已移除）。 */
   wsPort: number;
@@ -103,6 +106,7 @@ export const DEFAULT_CONFIG: NoaConfig = {
   logEnabled: true,
   onebot: {
     enable: true,
+    mode: 'both',
     accessToken: '',
     wsPort: 7791,
     wsPath: '/ws',
@@ -159,6 +163,12 @@ export function validateConfig(config: NoaConfig): string[] {
   if (!Number.isInteger(config.onebot.wsPort) || config.onebot.wsPort < 0 || config.onebot.wsPort > 65535) {
     warnings.push('onebot.wsPort 必须是 0..65535 的整数');
   }
+  if (!['forward', 'reverse', 'both'].includes(config.onebot.mode)) {
+    warnings.push('onebot.mode 必须是 forward、reverse 或 both');
+  }
+  if (config.onebot.mode === 'reverse' && config.onebot.reverseUrls.length === 0) {
+    warnings.push('onebot.mode=reverse 但 reverseUrls 为空，不会连接任何反向 WS');
+  }
   if (!Array.isArray(config.onebot.reverseUrls)) warnings.push('onebot.reverseUrls 必须是数组');
   if (!Number.isInteger(config.milky.port) || config.milky.port < 0 || config.milky.port > 65535) {
     warnings.push('milky.port 必须是 0..65535 的整数');
@@ -210,6 +220,9 @@ function normalize(config: NoaConfig): NoaConfig {
   }
   if (!Number.isInteger(config.onebot.wsPort) || config.onebot.wsPort < 0 || config.onebot.wsPort > 65535) {
     config.onebot.wsPort = DEFAULT_CONFIG.onebot.wsPort;
+  }
+  if (config.onebot.mode !== 'forward' && config.onebot.mode !== 'reverse' && config.onebot.mode !== 'both') {
+    config.onebot.mode = DEFAULT_CONFIG.onebot.mode;
   }
   if (!Array.isArray(config.onebot.reverseUrls)) config.onebot.reverseUrls = [];
   if (!Number.isInteger(config.milky.port) || config.milky.port < 0 || config.milky.port > 65535) {

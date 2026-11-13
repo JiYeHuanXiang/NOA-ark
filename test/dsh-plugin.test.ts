@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { detectDshQqbotActivation } from '../src/dsh/takeover.js';
-import { normalizePluginConfig } from '../src/dsh/plugin.js';
+import { Config, normalizePluginConfig, unwrapVolatile } from '../src/dsh/plugin.js';
 
 let dir = '';
 let previousConfig: string | undefined;
@@ -96,6 +96,70 @@ describe('normalizePluginConfig', () => {
 
     expect(takeover.isolation).toBe('auto');
     expect(warnings.some((message) => message.includes('isolation'))).toBe(true);
+  });
+
+  it('defaults to both WS mode and warns on an invalid mode', () => {
+    expect(normalizePluginConfig(undefined, () => undefined).config.onebot.mode).toBe('both');
+
+    const warnings: string[] = [];
+    const { config } = normalizePluginConfig(
+      { onebot: { mode: 'sideways' } },
+      (message) => warnings.push(message),
+    );
+    expect(config.onebot.mode).toBe('both');
+    expect(warnings.some((message) => message.includes('onebot.mode'))).toBe(true);
+  });
+
+  it('unwraps dsh volatile refs before merging config', () => {
+    const write = Symbol.for('cosmokit.volatile.write');
+    const ref = <T>(value: T) => ({
+      get: () => value,
+      [write]: () => undefined,
+    });
+
+    const { config } = normalizePluginConfig({
+      onebot: {
+        enable: ref(true),
+        mode: ref('reverse'),
+        wsPort: ref(8123),
+        wsPath: ref('/nb'),
+        accessToken: ref('token'),
+        reverseUrls: ref(['ws://127.0.0.1:6700']),
+      },
+    }, () => undefined);
+
+    expect(config.onebot.enable).toBe(true);
+    expect(config.onebot.mode).toBe('reverse');
+    expect(config.onebot.wsPort).toBe(8123);
+    expect(config.onebot.wsPath).toBe('/nb');
+    expect(config.onebot.accessToken).toBe('token');
+    expect(config.onebot.reverseUrls).toEqual(['ws://127.0.0.1:6700']);
+  });
+
+  it('strips undefined leaves when unwrapping volatile config', () => {
+    const write = Symbol.for('cosmokit.volatile.write');
+    expect(unwrapVolatile({
+      a: { get: () => 1, [write]: () => undefined },
+      b: undefined,
+    })).toEqual({ a: 1 });
+  });
+});
+
+describe('dsh Config schema', () => {
+  it('exposes volatile OneBot WS fields with defaults', () => {
+    const parsed = Config({}) as unknown as {
+      onebot: {
+        mode: { get(): string };
+        wsPort: { get(): number };
+        wsPath: { get(): string };
+        reverseUrls: { get(): string[] };
+      };
+    };
+
+    expect(parsed.onebot.mode.get()).toBe('both');
+    expect(parsed.onebot.wsPort.get()).toBe(7791);
+    expect(parsed.onebot.wsPath.get()).toBe('/ws');
+    expect(parsed.onebot.reverseUrls.get()).toEqual([]);
   });
 });
 

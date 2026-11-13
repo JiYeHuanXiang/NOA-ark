@@ -36,6 +36,9 @@ export const name = 'noa-ark';
 /** 不依赖 dsh 服务；只需 Host 生命周期。 */
 export const inject: string[] = [];
 
+/** dsh 设置页读取的 Config schema（volatile 字段见 config-schema.ts）。 */
+export { Config } from './config-schema.js';
+
 export interface DshPluginContext {
   logger?: {
     debug?: (message: string) => void;
@@ -44,6 +47,8 @@ export interface DshPluginContext {
     error?: (message: string) => void;
   };
   effect?: (callback: () => () => unknown, label?: string) => unknown;
+  /** Cordis 事件；volatile 字段保存后触发 loader/volatile-update。 */
+  on?: (event: string, listener: () => unknown) => unknown;
 }
 
 export interface DshTakeoverConf {
@@ -82,9 +87,10 @@ export function normalizePluginConfig(
     warn(`读取 ~/.noa/config.json 失败，改用默认配置：${err instanceof Error ? err.message : String(err)}`);
     base = parseConfig({});
   }
-  const config = parseConfig(mergeConfig(base, raw), warn);
+  const plain = unwrapVolatile(raw);
+  const config = parseConfig(mergeConfig(base, plain), warn);
 
-  const record = isRecord(raw) ? raw : {};
+  const record = isRecord(plain) ? plain : {};
   const takeoverRaw = isRecord(record.takeover) ? record.takeover : {};
   const appId = typeof takeoverRaw.appId === 'string' ? takeoverRaw.appId.trim() : '';
   const autoAckInteraction = takeoverRaw.autoAckInteraction === true;
@@ -116,6 +122,12 @@ export function apply(ctx: DshPluginContext, rawConfig?: unknown): void {
 
   let handle: TakeoverHandle | undefined;
   let disposed = false;
+
+  // 设置页保存 volatile 字段后，用新值重建 OneBot 服务。
+  ctx.on?.('loader/volatile-update', () => {
+    if (disposed) return;
+    runtime.applyConfig(normalizePluginConfig(rawConfig, (message) => logger.warn(`配置：${message}`)).config);
+  });
 
   ctx.effect?.(() => {
     return () => {
@@ -158,6 +170,7 @@ export class TakeoverRuntime implements TakeoverSink {
   private readonly gateway: SyntheticGateway;
   private bridge: BridgeHandle | undefined;
   private starting = false;
+  private restartRequested = false;
   private nextRetryAt = 0;
   private captured: CapturedBot | undefined;
   private suppressing = false;
@@ -165,7 +178,7 @@ export class TakeoverRuntime implements TakeoverSink {
   private readonly ignoredAppIds = new Set<string>();
 
   constructor(
-    private readonly config: NoaConfig,
+    private config: NoaConfig,
     private readonly takeoverConf: DshTakeoverConf,
     private readonly logger: Logger,
   ) {
@@ -204,8 +217,25 @@ export class TakeoverRuntime implements TakeoverSink {
     this.starting = true;
     this.gateway.markOnline();
     void this.start(bot).finally(() => {
-      this.starting = false;
+      this.afterStart();
     });
+  }
+
+  /**
+   * dsh 设置页保存 volatile 字段后调用。
+   * WS 绑定相关字段变化时重建 OneBot 服务；其余字段等下一次启动生效。
+   */
+  applyConfig(next: NoaConfig): void {
+    if (this.closed) return;
+    const previous = this.config;
+    this.config = next;
+    if (onebotBindingKey(previous) === onebotBindingKey(next)) return;
+    if (this.bridge === undefined && !this.starting) {
+      this.logger.info('OneBot 配置已更新，将在下次启动时生效');
+      return;
+    }
+    this.logger.info('OneBot 配置已更新，正在重建 OneBot 服务');
+    void this.restart();
   }
 
   onEvent(event: TakeoverRawEvent): void {
@@ -221,8 +251,9 @@ export class TakeoverRuntime implements TakeoverSink {
       if (!this.starting) return false;
       // 启动窗口：always 全归 OneBot；auto 下只有反向 WS 可能在桥就绪前
       // 抢先回复，才把首条消息按 OneBot 归属，避免单条双处理。
-      return this.takeoverConf.isolation === 'always'
-        || this.config.onebot.reverseUrls.length > 0;
+      const reverseMayConnect = this.config.onebot.mode !== 'forward'
+        && this.config.onebot.reverseUrls.length > 0;
+      return this.takeoverConf.isolation === 'always' || reverseMayConnect;
     }
     const onebotClients = (this.bridge.onebot?.clients ?? 0) + (this.bridge.reverse?.connections ?? 0);
     const suppress = this.takeoverConf.isolation === 'always'
@@ -256,9 +287,41 @@ export class TakeoverRuntime implements TakeoverSink {
 
   async close(): Promise<void> {
     this.closed = true;
+    this.restartRequested = false;
     const bridge = this.bridge;
     this.bridge = undefined;
     await bridge?.close();
+  }
+
+  private afterStart(): void {
+    this.starting = false;
+    if (!this.restartRequested) return;
+    this.restartRequested = false;
+    void this.restart();
+  }
+
+  private async restart(): Promise<void> {
+    if (this.closed) return;
+    const bot = this.captured;
+    if (bot === undefined) return;
+    if (this.starting) {
+      this.restartRequested = true;
+      return;
+    }
+    this.starting = true;
+    this.nextRetryAt = 0;
+    const bridge = this.bridge;
+    this.bridge = undefined;
+    await bridge?.close();
+    if (this.closed) {
+      this.starting = false;
+      return;
+    }
+    try {
+      await this.start(bot);
+    } finally {
+      this.afterStart();
+    }
   }
 
   private async start(bot: CapturedBot): Promise<void> {
@@ -299,11 +362,18 @@ export class TakeoverRuntime implements TakeoverSink {
       this.logger.info(`已接管 QQ 连接（AppID：${maskedAppId(bot.appId)}），OneBot 使用同一凭据`);
       if (bridge.onebot !== undefined) {
         this.logger.info(`OneBot v11 正向 WS：${bridge.onebot.url}`);
-        if (this.config.onebot.reverseUrls.length > 0) {
-          this.logger.info(`OneBot v11 反向 WS：${this.config.onebot.reverseUrls.join(', ')}`);
+      }
+      if (bridge.reverse !== undefined) {
+        this.logger.info(`OneBot v11 反向 WS：${this.config.onebot.reverseUrls.join(', ')}`);
+      }
+      if (bridge.onebot === undefined && bridge.reverse === undefined) {
+        if (this.config.onebot.enable) {
+          this.logger.warn(
+            `OneBot 未开放任何 WS 通道（mode=${this.config.onebot.mode}，reverseUrls 为空）`,
+          );
+        } else {
+          this.logger.warn('onebot.enable=false，未开放任何 OneBot 服务');
         }
-      } else {
-        this.logger.warn('onebot.enable=false，未开放任何 OneBot 服务');
       }
       if (bridge.milky !== undefined) {
         this.logger.info(`Milky v1.3：${bridge.milky.url}/api/:api + /event`);
@@ -416,4 +486,31 @@ function createDshLogger(host: DshPluginContext['logger']): Logger {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+const VOLATILE_WRITE = Symbol.for('cosmokit.volatile.write');
+
+/** dsh 把 `.volatile()` 字段传成稳定引用；合并配置前取一次快照。 */
+export function unwrapVolatile(value: unknown): unknown {
+  if (typeof value === 'object' && value !== null && VOLATILE_WRITE in value) {
+    const ref = value as unknown as { get?: unknown };
+    if (typeof ref.get === 'function') {
+      return unwrapVolatile((ref.get as () => unknown)());
+    }
+  }
+  if (Array.isArray(value)) return value.map(unwrapVolatile);
+  if (isRecord(value)) {
+    const out: Record<string, unknown> = {};
+    for (const [key, item] of Object.entries(value)) {
+      if (item !== undefined) out[key] = unwrapVolatile(item);
+    }
+    return out;
+  }
+  return value;
+}
+
+/** WS 绑定字段；变化后需要重建监听/反向连接，其余配置可等下次启动。 */
+function onebotBindingKey(config: NoaConfig): string {
+  const { enable, mode, wsPort, wsPath, accessToken, reverseUrls } = config.onebot;
+  return JSON.stringify([enable, mode, wsPort, wsPath, accessToken, reverseUrls]);
 }
