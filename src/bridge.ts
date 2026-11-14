@@ -193,6 +193,8 @@ export class RecentIdSet {
 
 class BridgeSender implements MessageSender {
   private readonly lastPassive = new Map<string, string>();
+  /** event_id 被动回复的 msg_seq（按事件 id 递增，不进入 msg_id 窗口）。 */
+  private readonly eventSeq = new Map<string, number>();
 
   constructor(
     private readonly deps: {
@@ -277,6 +279,21 @@ class BridgeSender implements MessageSender {
   }
 
   /**
+   * event_id 被动回复：官方按事件 id 记账，不校验 msg_id 窗口。
+   * 同一事件多次回复时 msg_seq 递增；本地只做序号维护，配额以平台判定为准。
+   */
+  reserveForEvent(eventId: string): { eventId: string; msgSeq: number } {
+    const next = (this.eventSeq.get(eventId) ?? 0) + 1;
+    this.eventSeq.set(eventId, next);
+    while (this.eventSeq.size > 2_000) {
+      const first = this.eventSeq.keys().next();
+      if (first.done === true) break;
+      this.eventSeq.delete(first.value);
+    }
+    return { eventId, msgSeq: next };
+  }
+
+  /**
    * 按顺序发送分片：先上传富媒体（失败不消耗回复次数），再逐条领取被动槽。
    * 文本 / markdown / 图文卡片 / 富媒体各占一条官方消息，因此混合内容会拆成多条发送。
    */
@@ -299,14 +316,24 @@ class BridgeSender implements MessageSender {
         )
         : null;
 
-      const grant = this.reserve(scope, targetOpenid);
+      const eventId = options?.eventId !== undefined && options.eventId !== '' ? options.eventId : undefined;
+      let grant: { msgId?: string; msgSeq?: number; passive: boolean };
+      let eventGrant: { eventId: string; msgSeq: number } | undefined;
+      if (eventId === undefined) {
+        grant = this.reserve(scope, targetOpenid);
+      } else {
+        eventGrant = this.reserveForEvent(eventId);
+        grant = { passive: true, msgSeq: eventGrant.msgSeq };
+      }
       if (!grant.passive) allPassive = false;
 
       const refIdx: string | undefined = !refAttached && options?.refIdx !== undefined && options.refIdx !== ''
         ? options.refIdx
         : undefined;
       const sendOptions = {
-        ...(grant.msgId === undefined ? {} : { msgId: grant.msgId, msgSeq: grant.msgSeq }),
+        ...(eventGrant === undefined
+          ? (grant.msgId === undefined ? {} : { msgId: grant.msgId, msgSeq: grant.msgSeq })
+          : { eventId: eventGrant.eventId, msgSeq: eventGrant.msgSeq }),
         ...(refIdx === undefined ? {} : { refIdx }),
         ...(part.kind === 'text' || part.kind === 'markdown'
           ? (part.keyboard === undefined
@@ -321,7 +348,7 @@ class BridgeSender implements MessageSender {
           resp = await this.deps.rest.sendText({ scope, targetId: targetOpenid }, part.text, sendOptions);
           break;
         case 'markdown':
-          resp = await this.deps.rest.sendMarkdown({ scope, targetId: targetOpenid }, part.content, sendOptions);
+          resp = await this.deps.rest.sendMarkdown({ scope, targetId: targetOpenid }, part.markdown, sendOptions);
           break;
         case 'card':
           resp = await this.deps.rest.sendCard(
@@ -361,6 +388,19 @@ class BridgeSender implements MessageSender {
 
   async approveGroupRequest(groupOpenid: string, requestId: string, approve: boolean): Promise<void> {
     await this.deps.rest.setGroupAddRequest({ eventSeq: requestId, groupId: groupOpenid, approve });
+  }
+
+  async approveJoinRequest(
+    groupOpenid: string,
+    memberOpenid: string,
+    body: {
+      op: 'approve' | 'decline';
+      joinRequestId?: string;
+      rejectReason?: string;
+      addToMemberBlacklist?: boolean;
+    },
+  ): Promise<void> {
+    await this.deps.rest.approveJoinRequest(groupOpenid, memberOpenid, body);
   }
 
   async listGroupMembers(
@@ -635,6 +675,7 @@ export async function startBridge(options: BridgeOptions): Promise<BridgeHandle>
         idMode,
         selfOpenid: selfSeed,
         now,
+        noaEvents: config.noa.ext.events,
       },
     );
 

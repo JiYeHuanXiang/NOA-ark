@@ -20,7 +20,11 @@
       "menu": false,
       "joinPolicy": false,
       "stream": false,
-      "wakeup": false
+      "wakeup": false,
+      "groupAdmin": false,
+      "material": false,
+      "share": false,
+      "events": false
     },
     "autoAckInteraction": true,
     "interactionRaw": false

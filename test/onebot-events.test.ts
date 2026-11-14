@@ -258,6 +258,7 @@ describe('officialEventToOneBotEvent', () => {
       sub_type: 'add',
       comment: '让我进群',
       flag: 'GROUP_A:42',
+      member_openid: 'USER_E',
     });
   });
 
@@ -272,6 +273,133 @@ describe('officialEventToOneBotEvent', () => {
       notice_type: 'friend_add',
       user_id: Number(mapper.pseudoOf('USER_F')),
     });
+  });
+
+  it('gates P7 notices behind noa.ext.events', () => {
+    const { ctx, mapper } = makeCtx();
+    const off = officialEventToOneBotEvent(
+      { eventType: 'FRIEND_DEL', data: { user_openid: 'USER_F' } },
+      ctx,
+    );
+    expect(off).toBeNull();
+
+    const on = officialEventToOneBotEvent(
+      { eventType: 'FRIEND_DEL', data: { user_openid: 'USER_F' } },
+      { ...ctx, noaEvents: true },
+    );
+    expect(on).toMatchObject({
+      post_type: 'notice',
+      notice_type: 'noa_friend_del',
+      user_id: Number(mapper.pseudoOf('USER_F')),
+    });
+  });
+
+  it('maps message receive switches and subscribe status', () => {
+    const { ctx, mapper } = makeCtx();
+    const withEvents = { ...ctx, noaEvents: true };
+
+    const groupOn = officialEventToOneBotEvent(
+      { eventType: 'GROUP_MSG_RECEIVE', data: { group_openid: 'GROUP_A', op_user_id: 'USER_A' } },
+      withEvents,
+    );
+    expect(groupOn).toMatchObject({
+      post_type: 'notice',
+      notice_type: 'noa_group_msg_setting',
+      group_id: Number(mapper.pseudoOf('GROUP_A')),
+      operator_id: Number(mapper.pseudoOf('USER_A')),
+      enabled: true,
+    });
+
+    const groupOff = officialEventToOneBotEvent(
+      { eventType: 'GROUP_MSG_REJECT', data: { group_openid: 'GROUP_A', op_user_id: 'USER_A' } },
+      withEvents,
+    );
+    expect(groupOff).toMatchObject({ notice_type: 'noa_group_msg_setting', enabled: false });
+
+    const c2c = officialEventToOneBotEvent(
+      { eventType: 'C2C_MSG_RECEIVE', data: { user_openid: 'USER_B' } },
+      withEvents,
+    );
+    expect(c2c).toMatchObject({
+      notice_type: 'noa_c2c_msg_setting',
+      user_id: Number(mapper.pseudoOf('USER_B')),
+      enabled: true,
+    });
+
+    const subscribe = officialEventToOneBotEvent(
+      {
+        eventType: 'SUBSCRIBE_MESSAGE_STATUS',
+        data: {
+          openid: 'USER_C',
+          result: [{ template_id: 1, op: 1, subscribe_id: 'sub_1' }],
+        },
+      },
+      withEvents,
+    );
+    expect(subscribe).toMatchObject({
+      notice_type: 'noa_subscribe_status',
+      user_id: Number(mapper.pseudoOf('USER_C')),
+      result: [{ template_id: 1, op: 1, subscribe_id: 'sub_1' }],
+    });
+  });
+
+  it('maps GROUP_MEMBER_REMOVE as a kick and keeps GROUP_MEMBER_QUIT as leave', () => {
+    const { ctx, mapper } = makeCtx();
+    const removed = officialEventToOneBotEvent(
+      {
+        eventType: 'GROUP_MEMBER_REMOVE',
+        data: { group_openid: 'GROUP_A', member_openid: 'USER_D', op_user_id: 'USER_O' },
+      },
+      ctx,
+    );
+    expect(removed).toMatchObject({
+      post_type: 'notice',
+      notice_type: 'group_decrease',
+      sub_type: 'kick',
+      user_id: Number(mapper.pseudoOf('USER_D')),
+      operator_id: Number(mapper.pseudoOf('USER_O')),
+    });
+  });
+
+  it('maps new GROUP_JOIN_REQUEST fields', () => {
+    const { ctx } = makeCtx();
+    const event = officialEventToOneBotEvent(
+      {
+        eventType: 'GROUP_JOIN_REQUEST',
+        data: {
+          group_openid: 'GROUP_A',
+          member_openid: 'USER_E',
+          join_request_id: 'jr_1',
+          verify_info: { method: 'verify_message', verify_message: '放我进去' },
+          auto_approved: false,
+        },
+      },
+      ctx,
+    );
+    expect(event).toMatchObject({
+      flag: 'GROUP_A:USER_E:jr_1',
+      join_request_id: 'jr_1',
+      member_openid: 'USER_E',
+      comment: '放我进去',
+      verify_info: { method: 'verify_message', verify_message: '放我进去' },
+      auto_approved: false,
+    });
+
+    const missingMember = officialEventToOneBotEvent(
+      { eventType: 'GROUP_JOIN_REQUEST', data: { group_openid: 'GROUP_A', join_request_id: 'jr_2' } },
+      ctx,
+    );
+    expect(missingMember).toMatchObject({ flag: '', join_request_id: 'jr_2' });
+    expect((missingMember as { member_openid?: string }).member_openid).toBeUndefined();
+
+    const zeroSeq = officialEventToOneBotEvent(
+      {
+        eventType: 'GROUP_JOIN_REQUEST',
+        data: { group_openid: 'GROUP_A', user_openid: 'USER_E', notification_seq: 0 },
+      },
+      ctx,
+    );
+    expect(zeroSeq).toMatchObject({ flag: '' });
   });
 
   it('returns null for events without a v11 equivalent', () => {

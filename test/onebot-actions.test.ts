@@ -36,6 +36,7 @@ function makeRouter(
     recall: vi.fn(async () => undefined),
     setGroupBan: vi.fn(async () => undefined),
     approveGroupRequest: vi.fn(async () => undefined),
+    approveJoinRequest: vi.fn(async () => undefined),
     listGroupMembers: vi.fn(async () => ({ members: [], nextCursor: '' })),
     getGroupMember: vi.fn(async () => ({
       memberOpenid: 'USER_B',
@@ -110,6 +111,54 @@ describe('OneBotActionRouter', () => {
     const data = r.data as { message_id: number; passive: boolean };
     expect(data.message_id).toBe(Number(mapper.pseudoMsgOf('RAW_OUT_1')));
     expect(data.passive).toBe(true);
+  });
+
+  it('forwards event_id as the passive reply key', async () => {
+    const { router, sender, mapper } = makeRouter();
+    const groupId = Number(mapper.pseudoOf('GROUP_A'));
+    const r = await router.dispatch('send_group_msg', {
+      group_id: groupId,
+      message: 'hi',
+      event_id: 'EV_1',
+    });
+    expect(r.status).toBe('ok');
+    expect(sender.sendGroupParts).toHaveBeenCalledWith(
+      'GROUP_A',
+      [{ kind: 'text', text: 'hi' }],
+      { refIdx: '', eventId: 'EV_1' },
+    );
+  });
+
+  it('approves join requests through the new endpoint when the flag has three parts', async () => {
+    const { router, sender } = makeRouter();
+    const r = await router.dispatch('set_group_add_request', {
+      flag: 'GROUP_A:USER_E:jr_1',
+      approve: false,
+      reason: '满员',
+    });
+    expect(r.status).toBe('ok');
+    expect(sender.approveJoinRequest).toHaveBeenCalledWith('GROUP_A', 'USER_E', {
+      op: 'decline',
+      joinRequestId: 'jr_1',
+      rejectReason: '满员',
+    });
+
+    const legacy = await router.dispatch('set_group_add_request', {
+      flag: 'GROUP_A:42',
+      approve: true,
+    });
+    expect(legacy.status).toBe('ok');
+    expect(sender.approveGroupRequest).toHaveBeenCalledWith('GROUP_A', '42', true);
+  });
+
+  it('rejects legacy flags without a usable event seq', async () => {
+    const { router, sender } = makeRouter();
+    for (const flag of ['', 'GROUP_A:0', 'GROUP_A:', 'GROUP_A', 'GROUP_A:USER_E:']) {
+      const r = await router.dispatch('set_group_add_request', { flag, approve: true });
+      expect(r.retcode).toBe(1400);
+    }
+    expect(sender.approveGroupRequest).not.toHaveBeenCalled();
+    expect(sender.approveJoinRequest).not.toHaveBeenCalled();
   });
 
   it('rejects unknown group ids with retcode 1400', async () => {

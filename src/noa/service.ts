@@ -6,7 +6,7 @@
  */
 
 import type { OfficialScope } from '../types.js';
-import { RestApiError, type Rest, type StreamFrameResponse } from '../official/rest.js';
+import { RestApiError, type OfficialJoinRequest, type Rest, type StreamFrameResponse } from '../official/rest.js';
 import type { JoinStrategyStore } from './join-policy.js';
 
 /** 桥接层发送能力的只读视图；passive 预留由桥接层统一记账。 */
@@ -125,6 +125,146 @@ export class NoaExtensionService {
     limit?: number,
   ): Promise<Record<string, unknown>> {
     return this.deps.rest.listPanels(scope, cursor, limit);
+  }
+
+  async getMenu(): Promise<Record<string, unknown>> {
+    return this.deps.rest.getMenu();
+  }
+
+  async getPanel(panelId: string): Promise<Record<string, unknown>> {
+    return this.deps.rest.getPanel(panelId);
+  }
+
+  async updatePanel(panelId: string, panel: Record<string, unknown>): Promise<{ version?: number }> {
+    return this.deps.rest.updatePanel(panelId, panel);
+  }
+
+  async deletePanel(panelId: string): Promise<void> {
+    await this.deps.rest.deletePanel(panelId);
+  }
+
+  async setPanelTarget(
+    panelId: string,
+    op: 'add' | 'del',
+    target: { userOpenids?: readonly string[]; groupOpenids?: readonly string[] },
+  ): Promise<void> {
+    await this.deps.rest.updatePanelTarget(panelId, op, target);
+  }
+
+  // —— 群管理（P7.2）——
+
+  async listJoinRequests(
+    groupOpenid: string,
+    cursor?: string,
+    limit?: number,
+  ): Promise<{ list: Array<Record<string, unknown>>; nextCursor: string }> {
+    const page = await this.deps.rest.listJoinRequests(groupOpenid, cursor, limit);
+    return {
+      list: page.list.map((item) => joinRequestToRecord(item, groupOpenid)),
+      nextCursor: page.nextCursor,
+    };
+  }
+
+  async handleJoinRequest(
+    groupOpenid: string,
+    memberOpenid: string,
+    body: {
+      op: 'approve' | 'decline';
+      joinRequestId?: string;
+      rejectReason?: string;
+      addToMemberBlacklist?: boolean;
+    },
+  ): Promise<void> {
+    await this.deps.rest.approveJoinRequest(groupOpenid, memberOpenid, body);
+  }
+
+  async getMuteState(groupOpenid: string): Promise<Record<string, unknown>> {
+    const state = await this.deps.rest.getMuteState(groupOpenid);
+    return {
+      global_rule: state.globalRule,
+      members: state.members.map((member) => ({
+        member_openid: member.memberOpenid,
+        mute_expire_at: member.muteExpireAt,
+        username: member.username,
+        ...(member.unionOpenid === undefined ? {} : { union_openid: member.unionOpenid }),
+      })),
+    };
+  }
+
+  async setMemberMutes(
+    groupOpenid: string,
+    members: ReadonlyArray<{ op: 'add' | 'update' | 'del'; memberOpenid: string; muteExpireAt?: string }>,
+  ): Promise<void> {
+    await this.deps.rest.setMemberMutes(groupOpenid, members);
+  }
+
+  async listBlacklist(
+    groupOpenid: string,
+    cursor?: string,
+    limit?: number,
+  ): Promise<{ users: Array<Record<string, unknown>>; nextCursor: string }> {
+    const page = await this.deps.rest.listMemberBlacklist(groupOpenid, cursor, limit);
+    return {
+      users: page.users.map((user) => ({
+        member_openid: user.memberOpenid,
+        username: user.username,
+        banned_at: user.bannedAt,
+        bot: user.bot,
+        ...(user.unionOpenid === undefined ? {} : { union_openid: user.unionOpenid }),
+      })),
+      nextCursor: page.nextCursor,
+    };
+  }
+
+  async updateBlacklist(
+    groupOpenid: string,
+    op: 'add' | 'del',
+    memberOpenids: readonly string[],
+  ): Promise<{ failedOpenids: string[] }> {
+    return this.deps.rest.updateMemberBlacklist(groupOpenid, op, memberOpenids);
+  }
+
+  async getGroupBotState(groupOpenid: string): Promise<Record<string, unknown>> {
+    return this.deps.rest.getGroupBotState(groupOpenid);
+  }
+
+  async listJoinPolicies(
+    cursor?: string,
+    limit?: number,
+  ): Promise<{ strategies: Array<Record<string, unknown>>; nextCursor: string }> {
+    return this.deps.rest.listJoinApprovalStrategies(cursor, limit);
+  }
+
+  async deleteJoinPolicy(strategyId: string): Promise<void> {
+    await this.deps.rest.deleteJoinApprovalStrategy(strategyId);
+    this.deps.strategyStore?.deleteByStrategyId(strategyId);
+  }
+
+  // —— 素材 / 分享（P7.3）——
+
+  async uploadMediaImage(
+    file: string,
+    options?: { fileName?: string; contentType?: string },
+  ): Promise<{ imageId: string; url: string; ttl?: number; previewUrl?: string }> {
+    const result = await this.deps.rest.uploadMediaImage(file, options);
+    return {
+      imageId: result.imageId,
+      url: result.url,
+      ttl: result.ttl,
+      previewUrl: result.previewUrl,
+    };
+  }
+
+  async listMediaImages(cursor?: string): Promise<Record<string, unknown>> {
+    return this.deps.rest.listMediaImages(cursor);
+  }
+
+  async deleteMediaImage(imageId: string): Promise<void> {
+    await this.deps.rest.deleteMediaImage(imageId);
+  }
+
+  async generateUrlLink(callbackData?: string): Promise<{ url: string }> {
+    return this.deps.rest.generateUrlLink(callbackData);
   }
 
   // —— 入群自动审批策略 ——
@@ -325,6 +465,24 @@ function stringOf(value: unknown): string {
   if (typeof value === 'string') return value;
   if (typeof value === 'number' && Number.isFinite(value)) return String(value);
   return '';
+}
+
+/** 入群申请记录：保留官方字段，并给出可直接用于 set_group_add_request 的 flag。 */
+function joinRequestToRecord(item: OfficialJoinRequest, groupOpenid: string): Record<string, unknown> {
+  const record: Record<string, unknown> = {
+    join_request_id: item.joinRequestId,
+    member_openid: item.memberOpenid,
+    username: item.username,
+    apply_at: item.applyAt,
+    apply_source: item.applySource,
+    invited_by: item.invitedBy,
+    bot: item.bot,
+    risk_tips: item.riskTips,
+    verify_info: item.verifyInfo,
+    flag: `${groupOpenid}:${item.memberOpenid}:${item.joinRequestId}`,
+  };
+  if (item.unionOpenid !== undefined) record.union_openid = item.unionOpenid;
+  return record;
 }
 
 async function sleep(ms: number): Promise<void> {

@@ -41,6 +41,8 @@ export interface SentMessagePart {
 export interface SendPartsOptions {
   /** 被引用消息的 REFIDX；只附加到本次发送的第一条消息。 */
   refIdx?: string;
+  /** 被动回复事件 id（与 msg_id 二选一；官方按事件类型校验场景）。 */
+  eventId?: string;
 }
 
 export interface SendPartsResult {
@@ -83,6 +85,17 @@ export interface MessageSender {
   recall(scope: OfficialScope, targetOpenid: string, rawMsgId: string): Promise<void>;
   setGroupBan(groupOpenid: string, muteSeconds: number, memberOpenid?: string): Promise<void>;
   approveGroupRequest(groupOpenid: string, requestId: string, approve: boolean): Promise<void>;
+  /** 新审批端点（approval_join_request）：支持拒绝理由与同时拉黑。 */
+  approveJoinRequest(
+    groupOpenid: string,
+    memberOpenid: string,
+    body: {
+      op: 'approve' | 'decline';
+      joinRequestId?: string;
+      rejectReason?: string;
+      addToMemberBlacklist?: boolean;
+    },
+  ): Promise<void>;
   /** 群成员列表（白名单；30 条/页，cursor 为空表示第一页）。 */
   listGroupMembers(groupOpenid: string, cursor?: string): Promise<{ members: GroupMemberSnapshot[]; nextCursor: string }>;
   /** 单个群成员信息（白名单）；平台返回错误时抛错。 */
@@ -330,10 +343,12 @@ export class OneBotActionRouter {
     if (parts.length === 0) return this.badRequest('消息内容为空', echo);
 
     const reply = this.replyReference(conversion.replyId);
+    const eventId = typeof params.event_id === 'string' ? params.event_id : '';
+    const sendOptions = { refIdx: reply.refIdx, ...(eventId === '' ? {} : { eventId }) };
     try {
       const result = scope === 'group'
-        ? await sender.sendGroupParts(targetOpenid, parts, { refIdx: reply.refIdx })
-        : await sender.sendPrivateParts(targetOpenid, parts, { refIdx: reply.refIdx });
+        ? await sender.sendGroupParts(targetOpenid, parts, sendOptions)
+        : await sender.sendPrivateParts(targetOpenid, parts, sendOptions);
       this.cacheOutbound(scope, targetOpenid, parts, result);
       this.emitMessageSent(scope, targetOpenid, parts, result);
       const data: Record<string, unknown> = {
@@ -404,7 +419,7 @@ export class OneBotActionRouter {
       case 'media':
         return [{ type: part.mediaType, data: { file: part.file } }];
       case 'markdown': {
-        const segments: AnyOneBotSegment[] = [{ type: 'noa_markdown', data: { content: part.content } }];
+        const segments: AnyOneBotSegment[] = [{ type: 'noa_markdown', data: { ...part.markdown } }];
         if (part.keyboard !== undefined) segments.push({ type: 'noa_keyboard', data: part.keyboard });
         return segments;
       }
@@ -691,13 +706,34 @@ export class OneBotActionRouter {
     const sender = this.deps.sender;
     if (sender === null) return this.badRequest('机器人尚未连接，无法审批', echo);
     const flag = String(params.flag ?? '');
-    const sep = flag.indexOf(':');
-    if (sep <= 0) return this.badRequest('flag 无效或已过期', echo);
-    const groupOpenid = flag.slice(0, sep);
-    const requestId = flag.slice(sep + 1);
+    const parts = flag.split(':');
+    if (parts.length < 2 || parts[0] === '') {
+      return this.badRequest('flag 无效（缺少必要信息，无法审批入群申请）', echo);
+    }
+    const groupOpenid = parts[0];
     const approve = params.approve !== false;
+    const reason = typeof params.reason === 'string' ? params.reason : '';
     try {
-      await sender.approveGroupRequest(groupOpenid, requestId, approve);
+      if (parts.length >= 3) {
+        // 新事件/新 flag：group_openid:member_openid:join_request_id（join_request_id 可能含冒号）。
+        const memberOpenid = parts[1];
+        const joinRequestId = parts.slice(2).join(':');
+        if (memberOpenid === '' || joinRequestId === '') {
+          return this.badRequest('flag 无效（缺少必要信息，无法审批入群申请）', echo);
+        }
+        await sender.approveJoinRequest(groupOpenid, memberOpenid, {
+          op: approve ? 'approve' : 'decline',
+          joinRequestId,
+          rejectReason: reason,
+        });
+      } else {
+        // 旧 flag：group_openid:event_seq，保留旧端点兼容；序号不可用时明确失败。
+        const eventSeq = parts[1];
+        if (!/^\d+$/.test(eventSeq) || eventSeq === '0') {
+          return this.badRequest('flag 无效（缺少 join_request_id/member_openid 且事件序号不可用，无法审批）', echo);
+        }
+        await sender.approveGroupRequest(groupOpenid, eventSeq, approve);
+      }
       return this.ok(echo, null);
     } catch (err) {
       return this.badRequest(errText(err), echo);

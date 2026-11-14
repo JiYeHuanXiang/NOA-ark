@@ -39,6 +39,18 @@ export class JoinStrategyStore {
     if (this.map.delete(groupOpenid)) this.save();
   }
 
+  /** 删除策略后清理本地点位，避免后续 PATCH 打到已删除的 strategy_id。 */
+  deleteByStrategyId(strategyId: string): void {
+    let changed = false;
+    for (const [groupOpenid, stored] of this.map) {
+      if (stored === strategyId) {
+        this.map.delete(groupOpenid);
+        changed = true;
+      }
+    }
+    if (changed) this.save();
+  }
+
   private save(): void {
     try {
       writeJsonAtomic(this.file, {

@@ -43,6 +43,14 @@ export interface NoaExtConf {
   joinPolicy: boolean;
   stream: boolean;
   wakeup: boolean;
+  /** 高权限群管理（禁言查询/批量、黑名单、bot_state）；默认 false。 */
+  groupAdmin: boolean;
+  /** markdown 素材管理（media-images 上传/查询/删除）；默认 false。 */
+  material: boolean;
+  /** 生成分享链接（generate_url_link）；默认 false。 */
+  share: boolean;
+  /** P7 补充通知事件（好友删除 / 消息接收开关 / 订阅授权状态）；默认 false。 */
+  events: boolean;
 }
 
 export interface NoaConf {
@@ -88,6 +96,10 @@ export const DEFAULT_NOA_EXT: NoaExtConf = {
   joinPolicy: false,
   stream: false,
   wakeup: false,
+  groupAdmin: false,
+  material: false,
+  share: false,
+  events: false,
 };
 
 export const DEFAULT_CONFIG: NoaConfig = {

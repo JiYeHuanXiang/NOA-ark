@@ -110,10 +110,21 @@ export interface OneBotMentionAllSegment {
   data: Record<string, never>;
 }
 
+/** 官方 markdown 模板参数（custom_template_id + params 二选一于 content）。 */
+export interface NoaMarkdownParams {
+  key: string;
+  values: string[];
+}
+
 /** noa 扩展：官方 msg_type=2 markdown（opt-in）。 */
 export interface OneBotNoaMarkdownSegment {
   type: 'noa_markdown';
-  data: { content: string };
+  data: {
+    content?: string;
+    custom_template_id?: string;
+    params?: NoaMarkdownParams[];
+    force_verify_image_resource?: boolean;
+  };
 }
 
 /** 官方 keyboard 按钮预览样式：0 灰色线框 / 1 蓝色线框 / 3 白底红字 / 4 蓝底白字。 */
@@ -575,10 +586,18 @@ export function needsRichMedia(segments: readonly AnyOneBotSegment[]): boolean {
   return segments.some((segment) => RICH_MEDIA_TYPES.has(segment.type));
 }
 
+/** 出站 markdown 载荷：自定义 content 与模板 custom_template_id+params 二选一。 */
+export interface OutboundMarkdown {
+  content?: string;
+  custom_template_id?: string;
+  params?: NoaMarkdownParams[];
+  force_verify_image_resource?: boolean;
+}
+
 /** 出站消息的一个有序分片；官方一条消息只能承载一种内容，故按段拆成多条发送。 */
 export type OutboundPart =
   | { kind: 'text'; text: string; keyboard?: NoaKeyboardPayload }
-  | { kind: 'markdown'; content: string; keyboard?: NoaKeyboardPayload }
+  | { kind: 'markdown'; markdown: OutboundMarkdown; keyboard?: NoaKeyboardPayload }
   | { kind: 'media'; mediaType: 'image' | 'record' | 'video'; file: string }
   | { kind: 'card'; card: NoaCardPayload };
 
@@ -634,7 +653,7 @@ export function segmentsToOfficialParts(
   let replyId = '';
   let textBody = '';
   let mediaCount = 0;
-  let markdown: string | null = null;
+  let markdown: OutboundMarkdown | null = null;
   let keyboard: NoaKeyboardPayload | null = null;
   let card: NoaCardPayload | null = null;
 
@@ -716,11 +735,9 @@ export function segmentsToOfficialParts(
         if (markdown !== null) {
           return { ok: false, reason: '同一消息只能有一个 noa_markdown 段' };
         }
-        const content = readString(segment.data, 'content');
-        if (content.trim() === '') {
-          return { ok: false, reason: 'noa_markdown 的 content 不能为空' };
-        }
-        markdown = content;
+        const validated = validateMarkdownPayload(segment.data);
+        if (!validated.ok) return { ok: false, reason: validated.reason };
+        markdown = validated.markdown;
         break;
       }
       case 'noa_keyboard': {
@@ -773,12 +790,22 @@ export function segmentsToOfficialParts(
     if (mediaCount > 0) {
       return { ok: false, reason: 'noa_markdown 不能与富媒体混排（官方一条消息只能一种内容类型）' };
     }
+    if (markdown.content === undefined) {
+      if (markdownAtTags.length > 0) {
+        return { ok: false, reason: '模板 markdown（custom_template_id）不支持 at 段；@ 只能写在自定义 content 中' };
+      }
+      const part: OutboundPart = keyboard === null
+        ? { kind: 'markdown', markdown }
+        : { kind: 'markdown', markdown, keyboard };
+      return { ok: true, parts: [part], replyId };
+    }
     const content = markdownAtTags.length === 0
-      ? markdown
-      : `${markdown}${markdown.endsWith('\n') ? '' : '\n'}${markdownAtTags.join(' ')}`;
+      ? markdown.content
+      : `${markdown.content}${markdown.content.endsWith('\n') ? '' : '\n'}${markdownAtTags.join(' ')}`;
+    const payload: OutboundMarkdown = { ...markdown, content };
     const part: OutboundPart = keyboard === null
-      ? { kind: 'markdown', content }
-      : { kind: 'markdown', content, keyboard };
+      ? { kind: 'markdown', markdown: payload }
+      : { kind: 'markdown', markdown: payload, keyboard };
     return { ok: true, parts: [part], replyId };
   }
 
@@ -798,6 +825,59 @@ export function segmentsToOfficialParts(
 
 function escapeXmlAttr(value: string): string {
   return value.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function validateMarkdownPayload(
+  data: unknown,
+): { ok: true; markdown: OutboundMarkdown } | { ok: false; reason: string } {
+  if (!isRecord(data)) return { ok: false, reason: 'noa_markdown.data 必须是对象' };
+  const content = typeof data.content === 'string' ? data.content : '';
+  const templateId = typeof data.custom_template_id === 'string' ? data.custom_template_id : '';
+  const hasContent = content.trim() !== '';
+  const hasTemplate = templateId !== '';
+
+  if (hasContent && hasTemplate) {
+    return { ok: false, reason: 'noa_markdown 的 content 与 custom_template_id 互斥，只能二选一' };
+  }
+  if (!hasContent && !hasTemplate) {
+    return { ok: false, reason: 'noa_markdown 需要 content 或 custom_template_id + params' };
+  }
+
+  const forceVerify = data.force_verify_image_resource;
+  if (forceVerify !== undefined && typeof forceVerify !== 'boolean') {
+    return { ok: false, reason: 'noa_markdown.force_verify_image_resource 必须是布尔值' };
+  }
+
+  if (hasContent) {
+    if (data.params !== undefined) {
+      return { ok: false, reason: 'noa_markdown.params 只在模板模式（custom_template_id）下可用' };
+    }
+    const markdown: OutboundMarkdown = { content };
+    if (forceVerify === true) markdown.force_verify_image_resource = true;
+    return { ok: true, markdown };
+  }
+
+  if (forceVerify === true) {
+    return { ok: false, reason: 'force_verify_image_resource 仅适用于自定义 content 模式' };
+  }
+  if (!Array.isArray(data.params)) {
+    return { ok: false, reason: 'noa_markdown 模板模式需要 params 数组' };
+  }
+  const params: NoaMarkdownParams[] = [];
+  for (const [index, raw] of data.params.entries()) {
+    if (!isRecord(raw)) return { ok: false, reason: `noa_markdown.params 第 ${index + 1} 项必须是对象` };
+    const key = typeof raw.key === 'string' ? raw.key : '';
+    if (key === '') return { ok: false, reason: `noa_markdown.params 第 ${index + 1} 项缺少 key` };
+    if (!Array.isArray(raw.values) || raw.values.length === 0) {
+      return { ok: false, reason: `noa_markdown.params 第 ${index + 1} 项缺少 values 数组` };
+    }
+    const values = raw.values.map((item) => (typeof item === 'string' ? item : ''));
+    if (values.some((item) => item === '')) {
+      return { ok: false, reason: `noa_markdown.params 第 ${index + 1} 项的 values 必须是非空字符串` };
+    }
+    params.push({ key, values });
+  }
+  return { ok: true, markdown: { custom_template_id: templateId, params } };
 }
 
 function validateKeyboardPayload(

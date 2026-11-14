@@ -230,8 +230,53 @@ describe('segmentsToOfficialParts · noa/1', () => {
     expect(result).toEqual({
       ok: true,
       replyId: '',
-      parts: [{ kind: 'markdown', content: '**你好**', keyboard }],
+      parts: [{ kind: 'markdown', markdown: { content: '**你好**' }, keyboard }],
     });
+  });
+
+  it('supports markdown template mode and rejects conflicting combinations', () => {
+    const ok = segmentsToOfficialParts(
+      [{ type: 'noa_markdown', data: { custom_template_id: 'tpl_1', params: [{ key: 'title', values: ['标题'] }] } }],
+      { scope: 'group', noa },
+    );
+    expect(ok).toMatchObject({
+      ok: true,
+      parts: [{ kind: 'markdown', markdown: { custom_template_id: 'tpl_1', params: [{ key: 'title', values: ['标题'] }] } }],
+    });
+
+    const conflict = segmentsToOfficialParts(
+      [{ type: 'noa_markdown', data: { content: 'x', custom_template_id: 'tpl_1', params: [] } }],
+      { scope: 'group', noa },
+    );
+    expect(conflict.ok).toBe(false);
+
+    const missingParams = segmentsToOfficialParts(
+      [{ type: 'noa_markdown', data: { custom_template_id: 'tpl_1' } }],
+      { scope: 'group', noa },
+    );
+    expect(missingParams.ok).toBe(false);
+
+    const paramsWithContent = segmentsToOfficialParts(
+      [{ type: 'noa_markdown', data: { content: 'x', params: [{ key: 'k', values: ['v'] }] } }],
+      { scope: 'group', noa },
+    );
+    expect(paramsWithContent.ok).toBe(false);
+
+    const blankContent = segmentsToOfficialParts(
+      [{ type: 'noa_markdown', data: { content: '   ' } }],
+      { scope: 'group', noa },
+    );
+    expect(blankContent.ok).toBe(false);
+
+    const atWithTemplate = segmentsToOfficialParts(
+      [
+        { type: 'noa_markdown', data: { custom_template_id: 'tpl_1', params: [{ key: 'title', values: ['x'] }] } },
+        { type: 'at', data: { qq: '123456' } },
+      ],
+      { scope: 'group', noa, resolveAt: () => 'OPENID_U' },
+    );
+    expect(atWithTemplate.ok).toBe(false);
+    if (!atWithTemplate.ok) expect(atWithTemplate.reason).toContain('模板 markdown');
   });
 
   it('appends at(qq=user) as a markdown tag only in markdown mode', () => {
@@ -250,7 +295,7 @@ describe('segmentsToOfficialParts · noa/1', () => {
     if (result.ok) {
       expect(result.parts[0]).toMatchObject({
         kind: 'markdown',
-        content: '你好\n<qqbot-at-user id="OPENID_U" />',
+        markdown: { content: '你好\n<qqbot-at-user id="OPENID_U" />' },
       });
     }
   });

@@ -25,9 +25,40 @@ function makeService() {
     sendTyping: vi.fn(async () => ({ passive: true, seconds: 8 })),
     ackInteraction: vi.fn(async () => undefined),
     setMenu: vi.fn(async () => ({ version: 3 })),
+    getMenu: vi.fn(async () => ({ version: 3, menu: { items: [] } })),
     createPanel: vi.fn(async () => ({ panel_id: 'p_1' })),
     listPanels: vi.fn(async () => ({ records: [] })),
+    getPanel: vi.fn(async () => ({ panel_id: 'p_1' })),
+    updatePanel: vi.fn(async () => ({ version: 2 })),
+    deletePanel: vi.fn(async () => undefined),
+    setPanelTarget: vi.fn(async () => undefined),
     setJoinPolicy: vi.fn(async () => ({ strategy_id: 'st_1', is_enable: 'on', expire_at: '' })),
+    listJoinRequests: vi.fn(async () => ({
+      list: [{ join_request_id: 'jr_1', member_openid: 'USER_A', flag: 'GROUP_A:USER_A:jr_1' }],
+      nextCursor: 'C2',
+    })),
+    handleJoinRequest: vi.fn(async () => undefined),
+    listJoinPolicies: vi.fn(async () => ({ strategies: [{ strategy_id: 'st_1' }], nextCursor: '' })),
+    deleteJoinPolicy: vi.fn(async () => undefined),
+    getMuteState: vi.fn(async () => ({
+      global_rule: { mode: 'none' },
+      members: [{ member_openid: 'USER_A', mute_expire_at: '2027-01-01T00:00:00+08:00' }],
+    })),
+    setMemberMutes: vi.fn(async () => undefined),
+    listBlacklist: vi.fn(async () => ({
+      users: [{ member_openid: 'USER_B', username: 'Bob' }],
+      nextCursor: '',
+    })),
+    updateBlacklist: vi.fn(async () => ({ failedOpenids: ['USER_B'] })),
+    getGroupBotState: vi.fn(async () => ({ member_openid: 'USER_A', recv_msg_setting: 'all' })),
+    uploadMediaImage: vi.fn(async () => ({
+      imageId: 'img_1',
+      url: 'qqbot-media://image/v1/token',
+      ttl: 100,
+    })),
+    listMediaImages: vi.fn(async () => ({ images: [], next_cursor: '', total: 0 })),
+    deleteMediaImage: vi.fn(async () => undefined),
+    generateUrlLink: vi.fn(async () => ({ url: 'https://qun.qq.com/x' })),
     streamBegin: vi.fn(async () => ({ streamId: 's_1', index: 1, remainMsgLen: 10, passive: true })),
     streamAppend: vi.fn(async () => ({ streamId: 's_1', index: 2, remainMsgLen: 5 })),
     streamEnd: vi.fn(async () => ({ streamId: 's_1', ended: true as const, remainMsgLen: 0 })),
@@ -122,6 +153,172 @@ describe('NoaActionRouter', () => {
       whitelistOp: 'add',
       execute: true,
     });
+  });
+
+  it('routes menu and panel read/write actions under noa.ext.menu', async () => {
+    const { router, service } = makeRouter(noaConf({ menu: true }));
+
+    const menu = await router.dispatch('noa_get_menu', {}, undefined);
+    expect(menu?.data).toEqual({ version: 3, menu: { items: [] } });
+
+    const detail = await router.dispatch('noa_get_panel', { panel_id: 'p_1' }, undefined);
+    expect(detail?.data).toEqual({ panel_id: 'p_1' });
+
+    const updated = await router.dispatch('noa_update_panel', { panel_id: 'p_1', panel: { remark: 'x' } }, undefined);
+    expect(updated?.data).toEqual({ version: 2 });
+    expect(service.updatePanel).toHaveBeenCalledWith('p_1', { remark: 'x' });
+
+    const target = await router.dispatch(
+      'noa_set_panel_target',
+      { panel_id: 'p_1', op: 'add', group_openids: ['GROUP_A'] },
+      undefined,
+    );
+    expect(target?.status).toBe('ok');
+    expect(service.setPanelTarget).toHaveBeenCalledWith('p_1', 'add', { groupOpenids: ['GROUP_A'] });
+
+    const badTarget = await router.dispatch(
+      'noa_set_panel_target',
+      { panel_id: 'p_1', op: 'add', user_openids: ['U'], group_openids: ['G'] },
+      undefined,
+    );
+    expect(badTarget?.retcode).toBe(1400);
+
+    const deleted = await router.dispatch('noa_delete_panel', { panel_id: 'p_1' }, undefined);
+    expect(deleted?.status).toBe('ok');
+    expect(service.deletePanel).toHaveBeenCalledWith('p_1');
+  });
+
+  it('lists and handles join requests with mapped user ids', async () => {
+    const { router, mapper, service } = makeRouter(noaConf({ joinPolicy: true }));
+    const groupId = Number(mapper.pseudoOf('GROUP_A'));
+    const userId = Number(mapper.pseudoOf('USER_A'));
+
+    const list = await router.dispatch('noa_list_join_requests', { group_id: groupId }, undefined);
+    expect(list?.data).toMatchObject({
+      list: [{ join_request_id: 'jr_1', member_openid: 'USER_A', user_id: userId }],
+      next_cursor: 'C2',
+    });
+    expect(service.listJoinRequests).toHaveBeenCalledWith('GROUP_A', undefined, undefined);
+
+    const bad = await router.dispatch(
+      'noa_handle_join_request',
+      { group_id: groupId, user_id: userId, op: 'approve', reject_reason: 'x' },
+      undefined,
+    );
+    expect(bad?.retcode).toBe(1400);
+
+    const ok = await router.dispatch(
+      'noa_handle_join_request',
+      {
+        group_id: groupId,
+        user_id: userId,
+        op: 'decline',
+        join_request_id: 'jr_1',
+        reject_reason: '满员',
+        add_to_member_blacklist: true,
+      },
+      undefined,
+    );
+    expect(ok?.status).toBe('ok');
+    expect(service.handleJoinRequest).toHaveBeenCalledWith('GROUP_A', 'USER_A', {
+      op: 'decline',
+      joinRequestId: 'jr_1',
+      rejectReason: '满员',
+      addToMemberBlacklist: true,
+    });
+  });
+
+  it('routes group admin queries and validates mute payloads', async () => {
+    const { router, mapper, service } = makeRouter(noaConf({ groupAdmin: true }));
+    const groupId = Number(mapper.pseudoOf('GROUP_A'));
+    const userId = Number(mapper.pseudoOf('USER_A'));
+
+    const muted = await router.dispatch('noa_get_mute_state', { group_id: groupId }, undefined);
+    expect(muted?.data).toMatchObject({
+      global_rule: { mode: 'none' },
+      members: [{ member_openid: 'USER_A', user_id: userId }],
+    });
+
+    const bad = await router.dispatch(
+      'noa_set_member_mutes',
+      { group_id: groupId, members: [{ op: 'add', user_id: userId }] },
+      undefined,
+    );
+    expect(bad?.retcode).toBe(1400);
+
+    const ok = await router.dispatch(
+      'noa_set_member_mutes',
+      { group_id: groupId, members: [{ op: 'add', user_id: userId, mute_expire_at: '2027-01-01T00:00:00+08:00' }] },
+      undefined,
+    );
+    expect(ok?.status).toBe('ok');
+    expect(service.setMemberMutes).toHaveBeenCalledWith('GROUP_A', [
+      { op: 'add', memberOpenid: 'USER_A', muteExpireAt: '2027-01-01T00:00:00+08:00' },
+    ]);
+
+    const blacklist = await router.dispatch('noa_list_blacklist', { group_id: groupId }, undefined);
+    const blacklistUsers = (blacklist?.data as { users: Array<Record<string, unknown>> }).users;
+    expect(blacklistUsers[0]).toMatchObject({ member_openid: 'USER_B', username: 'Bob' });
+    expect(typeof blacklistUsers[0]?.user_id).toBe('number');
+
+    const tooMany = Array.from({ length: 21 }, () => 'USER_X');
+    const rejected = await router.dispatch(
+      'noa_update_blacklist',
+      { group_id: groupId, op: 'add', member_openids: tooMany },
+      undefined,
+    );
+    expect(rejected?.retcode).toBe(1400);
+
+    const updated = await router.dispatch(
+      'noa_update_blacklist',
+      { group_id: groupId, op: 'add', user_ids: [userId] },
+      undefined,
+    );
+    expect(updated?.data).toEqual({ fail_openids: ['USER_B'], fail_user_ids: ['USER_B'] });
+
+    const state = await router.dispatch('noa_get_group_bot_state', { group_id: groupId }, undefined);
+    expect(state?.data).toMatchObject({ user_id: userId, recv_msg_setting: 'all' });
+  });
+
+  it('gates material/share actions and validates callback_data', async () => {
+    const { router, service } = makeRouter(noaConf({ material: true, share: true }));
+
+    const uploaded = await router.dispatch(
+      'noa_upload_media_image',
+      { file: 'https://example.com/a.png', file_name: 'a.png' },
+      undefined,
+    );
+    expect(uploaded?.data).toMatchObject({ image_id: 'img_1', url: 'qqbot-media://image/v1/token' });
+
+    const listed = await router.dispatch('noa_list_media_images', {}, undefined);
+    expect(listed?.data).toMatchObject({ images: [], total: 0 });
+
+    const deleted = await router.dispatch('noa_delete_media_image', { image_id: 'img_1' }, undefined);
+    expect(deleted?.status).toBe('ok');
+    expect(service.deleteMediaImage).toHaveBeenCalledWith('img_1');
+
+    const longData = 'x'.repeat(33);
+    const badLink = await router.dispatch('noa_generate_url_link', { callback_data: longData }, undefined);
+    expect(badLink?.retcode).toBe(1400);
+
+    const link = await router.dispatch('noa_generate_url_link', { callback_data: 'abc' }, undefined);
+    expect(link?.data).toEqual({ url: 'https://qun.qq.com/x' });
+    expect(service.generateUrlLink).toHaveBeenCalledWith('abc');
+  });
+
+  it('rejects P7 actions when their extension is disabled', async () => {
+    const { router } = makeRouter(noaConf());
+    for (const action of [
+      'noa_get_menu',
+      'noa_get_panel',
+      'noa_list_join_requests',
+      'noa_get_mute_state',
+      'noa_list_media_images',
+      'noa_generate_url_link',
+    ]) {
+      const result = await router.dispatch(action, {}, undefined);
+      expect(result?.retcode).toBe(1404);
+    }
   });
 
   it('drives the single-chat stream lifecycle', async () => {

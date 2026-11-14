@@ -36,6 +36,8 @@ export interface OneBotEventContext {
   selfOpenid: string;
   /** 时间戳缺失时的兜底（毫秒）。 */
   now: () => number;
+  /** noa.ext.events：是否投递 P7 补充通知事件（默认关闭）。 */
+  noaEvents?: boolean;
 }
 
 export type AnyOneBotEvent =
@@ -43,6 +45,10 @@ export type AnyOneBotEvent =
   | OneBotGroupIncreaseEvent
   | OneBotGroupDecreaseEvent
   | OneBotFriendAddEvent
+  | OneBotFriendDelEvent
+  | OneBotGroupMsgSettingEvent
+  | OneBotC2cMsgSettingEvent
+  | OneBotSubscribeStatusEvent
   | OneBotGroupRecallEvent
   | OneBotFriendRecallEvent
   | OneBotGroupRequestEvent
@@ -104,6 +110,39 @@ export interface OneBotFriendAddEvent extends OneBotEventBase {
   user_id: number | string;
 }
 
+/** noa.ext.events：用户删除机器人。 */
+export interface OneBotFriendDelEvent extends OneBotEventBase {
+  post_type: 'notice';
+  notice_type: 'noa_friend_del';
+  user_id: number | string;
+}
+
+/** noa.ext.events：群管理员开启/关闭机器人主动消息通知（GROUP_MSG_RECEIVE / REJECT）。 */
+export interface OneBotGroupMsgSettingEvent extends OneBotEventBase {
+  post_type: 'notice';
+  notice_type: 'noa_group_msg_setting';
+  group_id: number | string;
+  operator_id: number | string;
+  enabled: boolean;
+}
+
+/** noa.ext.events：用户开启/关闭机器人主动消息推送（C2C_MSG_RECEIVE / REJECT）。 */
+export interface OneBotC2cMsgSettingEvent extends OneBotEventBase {
+  post_type: 'notice';
+  notice_type: 'noa_c2c_msg_setting';
+  user_id: number | string;
+  enabled: boolean;
+}
+
+/** noa.ext.events：订阅消息授权状态变更。 */
+export interface OneBotSubscribeStatusEvent extends OneBotEventBase {
+  post_type: 'notice';
+  notice_type: 'noa_subscribe_status';
+  user_id: number | string;
+  group_id?: number | string;
+  result: unknown[];
+}
+
 export interface OneBotGroupRecallEvent extends OneBotEventBase {
   post_type: 'notice';
   notice_type: 'group_recall';
@@ -128,6 +167,14 @@ export interface OneBotGroupRequestEvent extends OneBotEventBase {
   user_id: number | string;
   comment: string;
   flag: string;
+  /** 官方 join_request_id（审批接口回传键；flag 内已编码）。 */
+  join_request_id?: string;
+  /** 申请人 openid（非伪号；标准 flag 的组成部分）。 */
+  member_openid?: string;
+  /** 官方 verify_info（verify_message / admin_review_qa）。 */
+  verify_info?: Record<string, unknown>;
+  /** 官方标记的自动审批结果（若下发）。 */
+  auto_approved?: boolean;
 }
 
 export interface OneBotFriendRequestEvent extends OneBotEventBase {
@@ -335,22 +382,34 @@ export function officialEventToOneBotEvent(
       };
 
     case 'GROUP_MEMBER_QUIT':
+    case 'GROUP_MEMBER_REMOVE':
       return {
         time,
         self_id: selfId,
         post_type: 'notice',
         notice_type: 'group_decrease',
-        sub_type: 'leave',
+        sub_type: event.eventType === 'GROUP_MEMBER_REMOVE' ? 'kick' : 'leave',
         group_id: expose(readString(data, 'group_openid')),
         user_id: expose(readString(data, 'user_openid', 'openid', 'member_openid')),
         operator_id: expose(readString(data, 'op_user_id', 'operator_id')),
       };
 
     case 'GROUP_JOIN_REQUEST': {
-      const initiator = readString(data, 'user_openid', 'initiator_openid', 'openid');
+      const initiator = readString(data, 'user_openid', 'initiator_openid', 'openid', 'member_openid');
       const groupOpenid = readString(data, 'group_openid');
-      const requestId = readString(data, 'request_id', 'id', 'notification_seq')
-        || String(readNumber(data, 'notification_seq'));
+      const joinRequestId = readString(data, 'join_request_id');
+      const legacySeqRaw = readString(data, 'request_id', 'id', 'notification_seq');
+      const legacySeqNumber = readNumber(data, 'notification_seq');
+      const legacyRequestId = legacySeqRaw !== '' && legacySeqRaw !== '0'
+        ? legacySeqRaw
+        : (legacySeqNumber > 0 ? String(legacySeqNumber) : '');
+      const verifyInfo = isRecord(data.verify_info) ? data.verify_info : undefined;
+      const comment = readString(data, 'comment', 'msg')
+        || (verifyInfo === undefined ? '' : readString(verifyInfo, 'verify_message'));
+      // 新端点需要 group + member + join_request_id 三要素；旧事件只有 event_seq。
+      // 缺少必要信息时不猜测，flag 留空，由 set_group_add_request 明确 1400。
+      const canUseNewEndpoint = joinRequestId !== '' && initiator !== '';
+      const canUseLegacyEndpoint = !canUseNewEndpoint && joinRequestId === '' && legacyRequestId !== '';
       return {
         time,
         self_id: selfId,
@@ -359,9 +418,16 @@ export function officialEventToOneBotEvent(
         sub_type: 'add',
         group_id: expose(groupOpenid),
         user_id: expose(initiator),
-        comment: readString(data, 'comment', 'msg'),
-        // flag 对应用端不透明：内部编码 group openid + 请求序列号，供 set_group_add_request 使用。
-        flag: `${groupOpenid}:${requestId}`,
+        comment,
+        flag: canUseNewEndpoint
+          ? `${groupOpenid}:${initiator}:${joinRequestId}`
+          : canUseLegacyEndpoint
+            ? `${groupOpenid}:${legacyRequestId}`
+            : '',
+        ...(joinRequestId === '' ? {} : { join_request_id: joinRequestId }),
+        ...(initiator === '' ? {} : { member_openid: initiator }),
+        ...(verifyInfo === undefined ? {} : { verify_info: verifyInfo }),
+        ...(typeof data.auto_approved === 'boolean' ? { auto_approved: data.auto_approved } : {}),
       };
     }
 
@@ -373,6 +439,56 @@ export function officialEventToOneBotEvent(
         notice_type: 'friend_add',
         user_id: expose(readString(data, 'user_openid', 'openid')),
       };
+
+    case 'FRIEND_DEL':
+      if (ctx.noaEvents !== true) return null;
+      return {
+        time,
+        self_id: selfId,
+        post_type: 'notice',
+        notice_type: 'noa_friend_del',
+        user_id: expose(readString(data, 'user_openid', 'openid')),
+      };
+
+    case 'GROUP_MSG_RECEIVE':
+    case 'GROUP_MSG_REJECT':
+      if (ctx.noaEvents !== true) return null;
+      return {
+        time,
+        self_id: selfId,
+        post_type: 'notice',
+        notice_type: 'noa_group_msg_setting',
+        group_id: expose(readString(data, 'group_openid')),
+        operator_id: expose(readString(data, 'op_user_id', 'operator_id')),
+        enabled: event.eventType === 'GROUP_MSG_RECEIVE',
+      };
+
+    case 'C2C_MSG_RECEIVE':
+    case 'C2C_MSG_REJECT':
+      if (ctx.noaEvents !== true) return null;
+      return {
+        time,
+        self_id: selfId,
+        post_type: 'notice',
+        notice_type: 'noa_c2c_msg_setting',
+        user_id: expose(readString(data, 'user_openid', 'openid')),
+        enabled: event.eventType === 'C2C_MSG_RECEIVE',
+      };
+
+    case 'SUBSCRIBE_MESSAGE_STATUS': {
+      if (ctx.noaEvents !== true) return null;
+      const openid = readString(data, 'openid', 'user_openid');
+      const groupOpenid = readString(data, 'group_openid');
+      return {
+        time,
+        self_id: selfId,
+        post_type: 'notice',
+        notice_type: 'noa_subscribe_status',
+        user_id: expose(openid),
+        ...(groupOpenid === '' ? {} : { group_id: expose(groupOpenid) }),
+        result: Array.isArray(data.result) ? data.result : [],
+      };
+    }
 
     case 'FRIEND_VERIFY':
       return {
