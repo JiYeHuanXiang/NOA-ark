@@ -2,7 +2,7 @@
 
 > 对应实现：`src/onebot/actions.ts`（动作）、`src/onebot/events.ts`（事件）、`src/noa/*`（noa/1 扩展）、`src/onebot/server.ts` / `reverse.ts`（通信）。
 > 版本：0.1.0。能力边界与映射依据见 [文档.md](文档.md)。
-> 本手册描述**当前实现**（快照时间：2026-11-12）；`noa_*` 扩展已实现但默认关闭，见 [文档.md](文档.md) 与 §5.7。
+> 本手册描述**当前实现**（快照时间：2026-11-15）；`noa_*` 扩展已实现但默认关闭，见 [文档.md](文档.md) 与 §5.7。
 
 ---
 
@@ -51,6 +51,8 @@ NOA-onebot **只提供 WebSocket**（HTTP API 与 HTTP POST 上报已移除）�
 
 ## 3. 动作总览
 
+OneBot v11 标准动作共 38 个：19 个可用、3 个受限/占位、16 个明确拒绝；另有 `noa/1` 扩展动作 29 个（默认关闭，见 §5.7）。
+
 ### 3.1 可用（19 个）
 
 | 动作 | 说明 | 限制 |
@@ -67,7 +69,7 @@ NOA-onebot **只提供 WebSocket**（HTTP API 与 HTTP POST 上报已移除）�
 | `get_group_member_info` | 单个群成员 | 官方白名单接口；机器人自身直接返回 |
 | `set_group_kick` | 移除群成员 | 官方批量移除（白名单）；`reject_add_request=true` 同时拉黑 |
 | `set_group_add_request` | 入群申请审批 | 需官方群管理权限 |
-| `set_group_ban` | 群禁言 | 需官方权限；成员级接口未真机验证；省略 `user_id` 为全群路径（两种模式），`user_id=0` 仅 `mapped` 模式 |
+| `set_group_ban` | 群禁言 | 需官方权限；`user_id` 必填（成员级未真机验证）；`user_id=0` 仅在 `mapped` 模式等价全员禁言；全员禁言请用 `set_group_whole_ban` |
 | `set_group_whole_ban` | 全员禁言 | 需官方权限；`enable=true` 固定 24 小时，`false` 解除 |
 | `delete_msg` | 撤回机器人自己发出的消息 | 仅 2 分钟内；消息必须由本进程发送（已自动写入缓存） |
 | `get_image` | 图片附件缓存 | 传附件 URL → 本地路径（单文件 ≤20MB） |
@@ -245,8 +247,10 @@ NOA-onebot **只提供 WebSocket**（HTTP API 与 HTTP POST 上报已移除）�
 ```
 
 - `duration` 单位秒，`0` 表示取消；默认 1800。
-- `user_id` 省略 → 走全群禁言路径（两种模式都可用）；`user_id=0` 仅 `mapped` 模式下视为全群（`passthrough` 会把 `"0"` 当作 openid，请直接省略 `user_id`）；指定成员时该 `user_id` 必须已在本地映射中（该成员发过言），否则 `1400`。
-- 标准动作 `set_group_whole_ban` 已实现，见 §4.8；本动作的“省略 user_id”路径与它等价。
+- `user_id` **必填**；省略或空值返回 `1400`，并提示改用 `set_group_whole_ban`。
+- 指定成员时该 `user_id` 必须已在本地映射中（该成员发过言，或在成员列表/成员详情里出现过），否则 `1400`。
+- `user_id=0` 仅在 `mapped` 模式下视为全员禁言路径；`passthrough` 会把 `"0"` 当作 openid，请改用 `set_group_whole_ban`。
+- 全员禁言请使用标准动作 `set_group_whole_ban`（见 §4.8）。
 - 依赖官方禁言接口与权限，**成员级路径未真机验证**。
 
 ### 4.8 `set_group_whole_ban`
@@ -330,7 +334,7 @@ NOA-onebot **只提供 WebSocket**（HTTP API 与 HTTP POST 上报已移除）�
 
 ### 5.7 noa/1 扩展动作（默认关闭）
 
-需在配置 `noa.ext.*` 显式启用；未启用时统一 `1404`。字段细节与平台约束见 [文档.md](文档.md) §5/§6/§11。
+共 29 个动作：P1–P6 10 个 + P7 18 个 + dsh 专属 1 个。需在配置 `noa.ext.*` 显式启用；未启用时统一 `1404`。字段细节与平台约束见 [文档.md](文档.md) §5/§6/§11。
 
 | 动作 | 开关 | 场景 | 说明 |
 |---|---|---|---|
@@ -342,7 +346,7 @@ NOA-onebot **只提供 WebSocket**（HTTP API 与 HTTP POST 上报已移除）�
 | `noa_stream_begin` / `noa_stream_append` / `noa_stream_end` | `stream` | 单聊 | 流式消息；首帧返回 `stream_id`，后续帧传 `stream_id` |
 | `noa_send_wakeup` | `wakeup` | 单聊 | 互动召回（`is_wakeup=true`） |
 
-P7 新增（同样默认关闭）：
+P7 新增（18 个，同样默认关闭）：
 
 | 动作 | 开关 | 场景 | 说明 |
 |---|---|---|---|
@@ -358,7 +362,12 @@ P7 新增（同样默认关闭）：
 | `noa_get_group_bot_state` | `groupAdmin` | 群 | 机器人群内状态（`recv_msg_setting` / `member_role` 等） |
 | `noa_upload_media_image` / `noa_list_media_images` / `noa_delete_media_image` | `material` | 全局 | 素材图片上传（URL/本地/`base64://`，≤10MB）/ 查询 / 删除 |
 | `noa_generate_url_link` | `share` | 全局 | 生成机器人分享链接；`callback_data` ≤32 |
-| `noa_dsh_chat` | `dshChat.enable`（仅 dsh 插件） | 全局 | 把 QQ 输入交回 dsh AI，返回 `{reply, conversation_id, restricted}`；`restrictTools` 控制是否禁止一切读写改工具（见 文档 §12） |
+
+dsh 专属（1 个，不计入 P7 的 18 个；仅 dsh 插件内可用）：
+
+| 动作 | 开关 | 场景 | 说明 |
+|---|---|---|---|
+| `noa_dsh_chat` | `dshChat.enable` | 全局 | 把 QQ 输入交回 dsh AI，返回 `{reply, conversation_id, restricted}`；`restrictTools` 控制是否禁止一切读写改工具（见 文档 §12） |
 
 ```jsonc
 { "action": "noa_stream_begin", "params": { "user_id": 10000000000002, "content": "正在生成…" } }
