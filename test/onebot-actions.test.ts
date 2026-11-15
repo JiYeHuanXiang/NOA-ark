@@ -449,4 +449,23 @@ describe('OneBotActionRouter', () => {
     expect(r.data).toMatchObject({ file: 'C:/tmp/a.png', url: 'https://example.com/a.png' });
     expect(fetchMedia).toHaveBeenCalledWith('https://example.com/a.png');
   });
+
+  it('rejects set_group_ban without user_id instead of muting the whole group', async () => {
+    const { router, sender, mapper } = makeRouter();
+    const groupId = Number(mapper.pseudoOf('GROUP_A'));
+    const r = await router.dispatch('set_group_ban', { group_id: groupId, duration: 60 });
+    expect(r.status).toBe('failed');
+    expect(r.retcode).toBe(1400);
+    expect(sender.setGroupBan).not.toHaveBeenCalled();
+  });
+
+  it('normalizes get_group_info group_id to the exposed pseudo id', async () => {
+    const { router, mapper } = makeRouter({
+      getGroupInfo: vi.fn(async () => ({ groupName: '官方群名', memberCount: 42 })),
+    });
+    const groupId = Number(mapper.pseudoOf('GROUP_A'));
+    const r = await router.dispatch('get_group_info', { group_id: String(groupId) });
+    expect(r.status).toBe('ok');
+    expect((r.data as { group_id: number }).group_id).toBe(groupId);
+  });
 });

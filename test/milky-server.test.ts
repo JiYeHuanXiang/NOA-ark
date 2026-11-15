@@ -90,4 +90,38 @@ describe('Milky server', () => {
       await server.close();
     }
   });
+
+  it('returns 413 / 500 JSON errors without crashing the process', async () => {
+    let calls = 0;
+    const server = await startMilkyServer({
+      conf: { enable: true, port: 0, accessToken: 'mt' },
+      logger: quietLogger,
+      dispatch: async () => {
+        calls += 1;
+        if (calls === 1) throw new Error('boom');
+        return { status: 'ok', retcode: 0, data: { calls } };
+      },
+    });
+    const headers = { 'Content-Type': 'application/json', Authorization: 'Bearer mt' };
+    try {
+      const oversized = await fetch(`${server.url}/api/x`, {
+        method: 'POST',
+        headers,
+        body: 'a'.repeat(1024 * 1024 + 1),
+      });
+      expect(oversized.status).toBe(413);
+      expect(((await oversized.json()) as { retcode: number }).retcode).toBe(-413);
+
+      const boom = await fetch(`${server.url}/api/x`, { method: 'POST', headers, body: '{}' });
+      expect(boom.status).toBe(500);
+      expect(((await boom.json()) as { retcode: number }).retcode).toBe(-500);
+
+      // 前两次失败后进程仍可继续处理请求。
+      const alive = await fetch(`${server.url}/api/x`, { method: 'POST', headers, body: '{}' });
+      expect(alive.status).toBe(200);
+      expect(((await alive.json()) as { data: { calls: number } }).data.calls).toBe(2);
+    } finally {
+      await server.close();
+    }
+  });
 });

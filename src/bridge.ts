@@ -31,7 +31,12 @@ import {
   type SendPartsResult,
   type SentMessagePart,
 } from './onebot/actions.js';
-import { officialEventToOneBotEvent, type AnyOneBotEvent, type OneBotMessageEvent } from './onebot/events.js';
+import {
+  buildHeartbeatEvent,
+  officialEventToOneBotEvent,
+  type AnyOneBotEvent,
+  type OneBotMessageEvent,
+} from './onebot/events.js';
 import { startOneBotServer, type OneBotServerHandle } from './onebot/server.js';
 import { startReverseClients, type ReverseHandle } from './onebot/reverse.js';
 import { MilkyActionRouter } from './milky/actions.js';
@@ -151,6 +156,9 @@ export class RecentMessageCache implements MessageCacheLike {
 
 /** 消息去重 TTL：官方可能因重试/重连重复推送同一 msg_id。 */
 export const MESSAGE_DEDUPE_TTL_MS = 5 * 60_000;
+
+/** 仅反向 WS 模式下的心跳间隔（正向服务器的 30s 心跳已内置）。 */
+const REVERSE_HEARTBEAT_MS = 30_000;
 
 /**
  * 按官方原始 msg_id 做短期去重。
@@ -557,7 +565,6 @@ export async function startBridge(options: BridgeOptions): Promise<BridgeHandle>
     mapper,
     selfOpenid: selfSeed,
     selfNickname,
-    appId,
   });
 
   let onebot: OneBotServerHandle | undefined;
@@ -628,6 +635,14 @@ export async function startBridge(options: BridgeOptions): Promise<BridgeHandle>
       reverse?.broadcast(event);
     }
   }
+
+  // 仅反向 WS 模式下没有正向服务器的 30s 心跳，这里补齐 meta_event heartbeat。
+  const reverseHeartbeat = onebot === undefined && reverse !== undefined
+    ? setInterval(() => {
+      reverse?.broadcast(buildHeartbeatEvent(selfIdValue(), REVERSE_HEARTBEAT_MS, now));
+    }, REVERSE_HEARTBEAT_MS)
+    : undefined;
+  reverseHeartbeat?.unref?.();
 
   gateway.onEvent((envelope) => {
     try {
@@ -771,6 +786,8 @@ export async function startBridge(options: BridgeOptions): Promise<BridgeHandle>
     milky,
     async close(): Promise<void> {
       clearInterval(pruneTimer);
+      if (reverseHeartbeat !== undefined) clearInterval(reverseHeartbeat);
+      mapper.flush();
       await onebot?.close();
       reverse?.close();
       await milky?.close();

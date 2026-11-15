@@ -1,4 +1,4 @@
-import { mkdtempSync } from 'node:fs';
+import { existsSync, mkdtempSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -67,5 +67,15 @@ describe('IdMapper', () => {
     const mapper = new IdMapper({ file: tempFile('idmap.json') });
     expect(mapper.pseudoOf('')).toBe('');
     expect(mapper.pseudoMsgOf('')).toBe('');
+  });
+
+  it('defers file writes until flush instead of rewriting on every new id', () => {
+    const file = tempFile('idmap.json');
+    const mapper = new IdMapper({ file });
+    mapper.pseudoOf('A');
+    mapper.pseudoMsgOf('RAW_1');
+    expect(existsSync(file)).toBe(false);
+    mapper.flush();
+    expect(existsSync(file)).toBe(true);
   });
 });

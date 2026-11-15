@@ -79,7 +79,9 @@ export function startReverseClients(options: ReverseOptions): ReverseHandle {
       });
 
       ws.on('message', (raw) => {
-        void handleMessage(ws, raw.toString());
+        void handleMessage(ws, raw.toString()).catch((err: unknown) => {
+          logger.warn(`反向 WS 消息处理失败：${err instanceof Error ? err.message : String(err)}`);
+        });
       });
 
       ws.on('close', () => {
@@ -111,7 +113,14 @@ export function startReverseClients(options: ReverseOptions): ReverseHandle {
     const params = typeof frame.params === 'object' && frame.params !== null && !Array.isArray(frame.params)
       ? (frame.params as Record<string, unknown>)
       : {};
-    const response = await options.dispatch(action, params, frame.echo);
+    let response: OneBotResponse;
+    try {
+      response = await options.dispatch(action, params, frame.echo);
+    } catch (err) {
+      logger.warn(`反向 WS 动作 ${action} 执行失败：${err instanceof Error ? err.message : String(err)}`);
+      safeSend(ws, { status: 'failed', retcode: 1500, data: null, message: '内部错误', echo: frame.echo });
+      return;
+    }
     safeSend(ws, response);
   }
 

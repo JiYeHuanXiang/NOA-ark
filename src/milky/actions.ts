@@ -28,7 +28,6 @@ export interface MilkyDeps {
   mapper: { pseudoOf(openid: string): string; openidOf(pseudo: string): string | null; pseudoMsgOf(rawId: string): string; rawMsgOf(pseudo: string): string | null; selfPseudo(appId: string): string };
   selfOpenid: string;
   selfNickname: string;
-  appId: string;
 }
 
 const IMPL_INFO = {
@@ -72,11 +71,14 @@ export class MilkyActionRouter {
         const groupOpenid = this.resolveGroup(params.group_id);
         if (groupOpenid === null) return this.failed(-400, '未知 group_id');
         const memberOpenid = this.resolveUser(params.user_id);
+        if (memberOpenid === null) {
+          return this.failed(-400, '未知 user_id；无法定位成员时拒绝执行禁言（避免误伤全群）');
+        }
         const duration = typeof params.duration === 'number' && Number.isFinite(params.duration)
           ? Math.max(0, Math.floor(params.duration))
           : 0;
         try {
-          await sender.setGroupBan(groupOpenid, duration, memberOpenid ?? undefined);
+          await sender.setGroupBan(groupOpenid, duration, memberOpenid);
           return this.ok({});
         } catch (err) {
           return this.failed(-400, err instanceof Error ? err.message : String(err));
@@ -175,7 +177,7 @@ export class MilkyActionRouter {
       message: {
         message_scene: record.scope === 'group' ? 'group' : 'friend',
         peer_id: this.expose(record.peerOpenid),
-        message_seq: this.toSeq(String(seq)),
+        message_seq: this.seqValue(seq),
         sender_id: this.expose(record.senderOpenid),
         time: Math.floor(record.tsMs / 1000),
         segments,
@@ -211,10 +213,16 @@ export class MilkyActionRouter {
     return this.deps.idMode === 'passthrough' ? rawMsgId : Number(this.deps.mapper.pseudoMsgOf(rawMsgId));
   }
 
+  /** 缓存键已经是暴露后的 message_seq，不能再走 pseudoMsgOf 二次映射。 */
+  private seqValue(value: unknown): number | string {
+    const raw = String(value);
+    return this.deps.idMode === 'passthrough' ? raw : Number(raw);
+  }
+
   private selfId(): number | string {
     const raw = this.deps.idMode === 'passthrough'
       ? this.deps.selfOpenid
-      : this.deps.mapper.selfPseudo(this.deps.appId);
+      : this.deps.mapper.selfPseudo(this.deps.selfOpenid);
     return this.deps.idMode === 'passthrough' ? raw : Number(raw);
   }
 

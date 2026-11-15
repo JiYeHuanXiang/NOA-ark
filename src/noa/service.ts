@@ -68,6 +68,8 @@ interface StreamState {
   /** 已成功下发的内容（replace 模式用于前缀校验）。 */
   sentContent: string;
   grant: { msgId?: string; msgSeq?: number };
+  /** 互动召回流：后续帧必须继续携带 is_wakeup。 */
+  isWakeup: boolean;
   busy: boolean;
   /** 最后一次成功活动时间；用于惰性清理长时间无活动的流。 */
   lastActiveAt: number;
@@ -345,6 +347,7 @@ export class NoaExtensionService {
       inputMode,
       sentContent: options.content,
       grant: { msgId: grant.msgId, msgSeq: grant.msgSeq },
+      isWakeup,
       busy: false,
       lastActiveAt: Date.now(),
     });
@@ -368,6 +371,7 @@ export class NoaExtensionService {
         content,
         msgId: state.grant.msgId,
         msgSeq: state.grant.msgSeq,
+        isWakeup: state.isWakeup,
       });
       state.index += 1;
       state.sentContent = state.inputMode === 'replace' ? content : state.sentContent + content;
@@ -396,6 +400,7 @@ export class NoaExtensionService {
         content: finalContent,
         msgId: state.grant.msgId,
         msgSeq: state.grant.msgSeq,
+        isWakeup: state.isWakeup,
       });
       this.streams.delete(streamId);
       return { streamId, ended: true, remainMsgLen: resp.remainMsgLen };

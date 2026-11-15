@@ -31,6 +31,15 @@ export interface MilkyServerHandle {
 }
 
 const HEARTBEAT_MS = 30_000;
+const MAX_BODY_BYTES = 1024 * 1024;
+
+/** 带 HTTP 状态码的内部错误，供顶层 catch 统一转成 JSON 响应。 */
+class HttpError extends Error {
+  constructor(readonly status: number, message: string) {
+    super(message);
+    this.name = 'HttpError';
+  }
+}
 
 export async function startMilkyServer(options: MilkyServerOptions): Promise<MilkyServerHandle> {
   const { conf, logger } = options;
@@ -39,13 +48,28 @@ export async function startMilkyServer(options: MilkyServerOptions): Promise<Mil
   let heartbeat: NodeJS.Timeout | undefined;
 
   const httpServer: Server = createServer((req, res) => {
-    void handleHttp(req, res);
+    void handleHttp(req, res).catch((err: unknown) => {
+      const status = err instanceof HttpError ? err.status : 500;
+      logger.warn(`Milky HTTP 请求处理失败：${err instanceof Error ? err.message : String(err)}`);
+      respondJson(res, status, {
+        status: 'failed',
+        retcode: status === 413 ? -413 : status === 400 ? -400 : -500,
+        data: {},
+        message: err instanceof Error ? err.message : '内部错误',
+      });
+    });
   });
 
   const wss = new WebSocketServer({ noServer: true });
 
   httpServer.on('upgrade', (req: IncomingMessage, socket, head) => {
-    const url = new URL(req.url ?? '/', 'http://127.0.0.1');
+    let url: URL;
+    try {
+      url = new URL(req.url ?? '/', 'http://127.0.0.1');
+    } catch {
+      socket.destroy();
+      return;
+    }
     if (url.pathname !== '/event' || !checkAuth(req, url, conf.accessToken)) {
       socket.destroy();
       return;
@@ -67,7 +91,13 @@ export async function startMilkyServer(options: MilkyServerOptions): Promise<Mil
   });
 
   async function handleHttp(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    const url = new URL(req.url ?? '/', 'http://127.0.0.1');
+    let url: URL;
+    try {
+      url = new URL(req.url ?? '/', 'http://127.0.0.1');
+    } catch {
+      respondJson(res, 400, { status: 'failed', retcode: -400, data: {}, message: '请求 URL 无效' });
+      return;
+    }
 
     if (url.pathname === '/event' && req.method === 'GET') {
       if (!checkAuth(req, url, conf.accessToken)) {
@@ -82,13 +112,17 @@ export async function startMilkyServer(options: MilkyServerOptions): Promise<Mil
       });
       res.write(': connected\n\n');
       sseClients.add(res);
+      // SSE 长连接客户端异常断开时不能让未处理的 error 事件把进程带崩。
+      res.on('error', () => {
+        sseClients.delete(res);
+      });
       req.on('close', () => {
         sseClients.delete(res);
       });
       return;
     }
 
-    const match = /^\/api\/([A-Za-z0-9_]+)$/.exec(url.pathname);
+    const match = url.pathname.match(/^\/api\/([A-Za-z0-9_]+)$/);
     if (match !== null && req.method === 'POST') {
       if (!checkAuth(req, url, conf.accessToken)) {
         res.writeHead(401, { 'Content-Type': 'application/json' });
@@ -110,14 +144,24 @@ export async function startMilkyServer(options: MilkyServerOptions): Promise<Mil
           return;
         }
       }
-      const response = await options.dispatch(api, params);
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(response));
+      let response: MilkyResponse;
+      try {
+        response = await options.dispatch(api, params);
+      } catch (err) {
+        logger.warn(`Milky API ${api} 执行失败：${err instanceof Error ? err.message : String(err)}`);
+        respondJson(res, 500, {
+          status: 'failed',
+          retcode: -500,
+          data: {},
+          message: err instanceof Error ? err.message : '内部错误',
+        });
+        return;
+      }
+      respondJson(res, 200, response);
       return;
     }
 
-    res.writeHead(404, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ status: 'failed', retcode: -404, data: {}, message: 'API 不存在' }));
+    respondJson(res, 404, { status: 'failed', retcode: -404, data: {}, message: 'API 不存在' });
   }
 
   function broadcast(event: unknown): void {
@@ -201,16 +245,38 @@ function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let size = 0;
+    let settled = false;
+    const fail = (err: Error): void => {
+      if (settled) return;
+      settled = true;
+      reject(err);
+    };
     req.on('data', (chunk: Buffer) => {
+      if (settled) return;
       size += chunk.length;
-      if (size > 1024 * 1024) {
-        reject(new Error('请求体过大'));
-        req.destroy();
+      if (size > MAX_BODY_BYTES) {
+        fail(new HttpError(413, '请求体过大'));
+        req.pause();
         return;
       }
       chunks.push(chunk);
     });
-    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
-    req.on('error', reject);
+    req.on('end', () => {
+      if (settled) return;
+      settled = true;
+      resolve(Buffer.concat(chunks).toString('utf8'));
+    });
+    req.on('aborted', () => fail(new HttpError(400, '客户端中断请求')));
+    req.on('error', (err) => fail(err instanceof Error ? err : new Error(String(err))));
   });
+}
+
+/** 统一 JSON 响应；客户端已断开时静默失败，不影响进程。 */
+function respondJson(res: ServerResponse, status: number, payload: unknown): void {
+  try {
+    if (!res.headersSent) res.writeHead(status, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(payload));
+  } catch {
+    // ignore
+  }
 }

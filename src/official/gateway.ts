@@ -8,9 +8,11 @@
  *   - 断线重连：session 有效时 op 6 Resume { token, session_id, seq }
  *   - op 7 Reconnect / op 9 Invalid Session 按指示范畴处理
  *
- * 关闭码分类（FATAL：丢弃 session，重新 Identify）：
- *   4004 鉴权失败，4009 session 超时。
- * 其余（可恢复）：保留 session，用 Resume 恢复。
+ * 关闭码分类（按官方错误码表）：
+ *   - stop：4914 / 4915（机器人下架 / 封禁），停止重连；
+ *   - identify：4001/4002/4004/4006/4007/4010/4011/4012/4013/4014/4900–4913，
+ *     丢弃 session 后重新 Identify；
+ *   - resume：其余（含 4009 连接过期），保留 session 用 Resume 恢复。
  */
 
 import type { Logger } from '../types.js';
@@ -35,12 +37,33 @@ export const CLOSE_CODES = {
   SESSION_TIMEOUT: 4009,
 } as const;
 
-const FATAL_CLOSE_CODES = new Set<number>([
-  CLOSE_CODES.AUTH_FAILED,
-  CLOSE_CODES.SESSION_TIMEOUT,
+const STOP_CLOSE_CODES = new Set<number>([
+  4914, // 机器人已下架
+  4915, // 机器人已封禁
+]);
+
+const IDENTIFY_CLOSE_CODES = new Set<number>([
+  4001, // 无效的 opcode
+  4002, // 无效的 payload
+  4004, // 鉴权失败
+  4006, // 无效的 session
+  4007, // seq 错误
+  4010, // 无效的 shard
+  4011, // 待处理消息过多
+  4012, // 无效的 version
   4013, // 无效的 intent
   4014, // intent 无权限
 ]);
+
+export type CloseAction = 'resume' | 'identify' | 'stop';
+
+/** 按官方关闭码表决定重连方式；4009 连接过期可继续 Resume。 */
+export function classifyCloseCode(code: number): CloseAction {
+  if (STOP_CLOSE_CODES.has(code)) return 'stop';
+  if (IDENTIFY_CLOSE_CODES.has(code)) return 'identify';
+  if (code >= 4900 && code <= 4913) return 'identify'; // 官方内部错误
+  return 'resume';
+}
 
 const OP_DISPATCH = 0;
 const OP_HEARTBEAT = 1;
@@ -99,6 +122,7 @@ export function connectGateway(options: GatewayOptions): GatewayHandle {
   const now = (): number => Date.now();
   let online = false;
   let stopping = false;
+  let halted = false;
   let sessionId: string | undefined;
   let lastSeq: number | undefined;
   let ws: WebSocketLike | null = null;
@@ -131,7 +155,7 @@ export function connectGateway(options: GatewayOptions): GatewayHandle {
 
   async function run(): Promise<void> {
     let attempt = 0;
-    while (!stopping) {
+    while (!stopping && !halted) {
       try {
         await openOnce();
         attempt = 0;
@@ -139,14 +163,14 @@ export function connectGateway(options: GatewayOptions): GatewayHandle {
         logger.warn(`网关连接结束：${redact(err instanceof Error ? err.message : String(err))}`);
       }
       online = false;
-      if (stopping) break;
+      if (stopping || halted) break;
       attempt += 1;
       const base = options.reconnectDelayMs ?? 500;
       const delay = Math.min(60_000, base * 2 ** Math.min(attempt, 6));
       logger.info(`将在 ${delay}ms 后重连 QQ 网关`);
       await sleep(delay);
     }
-    failReady?.(new Error('网关在就绪前已停止'));
+    failReady?.(new Error(halted ? '网关已被平台永久关闭（4914/4915）' : '网关在就绪前已停止'));
   }
 
   async function openOnce(): Promise<void> {
@@ -179,6 +203,7 @@ export function connectGateway(options: GatewayOptions): GatewayHandle {
         logger.warn(`网关断开（code=${code}${event.reason ? ` ${redact(event.reason)}` : ''}）`);
         online = false;
         const intentRejected = code === 4013 || code === 4014;
+        const action = classifyCloseCode(code);
         if (intentRejected && intentFallback !== undefined && currentIntents !== intentFallback) {
           logger.warn(
             `网关拒绝 intents=${currentIntents}（code=${code}），回退为 ${intentFallback}（不再订阅群成员事件）`,
@@ -186,13 +211,18 @@ export function connectGateway(options: GatewayOptions): GatewayHandle {
           currentIntents = intentFallback;
           sessionId = undefined;
           lastSeq = undefined;
-        } else if (FATAL_CLOSE_CODES.has(code)) {
+        } else if (action === 'identify') {
           sessionId = undefined;
           lastSeq = undefined;
+        } else if (action === 'stop') {
+          halted = true;
+          sessionId = undefined;
+          lastSeq = undefined;
+          logger.error(`QQ 网关已被平台永久关闭（code=${code}），停止重连`);
         }
         stopHeartbeat();
         safeClose(socket);
-        if (stopping) resolve();
+        if (stopping || halted) resolve();
         else reject(new Error(`网关连接已关闭 (code=${code})`));
       };
 

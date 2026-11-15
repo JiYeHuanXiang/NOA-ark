@@ -519,7 +519,7 @@ export class OneBotActionRouter {
       return this.badRequest('群不在本地目录中，且官方群信息接口不可用（需平台白名单权限）', echo);
     }
     return this.ok(echo, {
-      group_id: params.group_id,
+      group_id: this.expose(groupOpenid),
       group_name: official?.groupName || entry?.alias || entry?.name || '',
       member_count: official?.memberCount ?? 0,
       max_member_count: 0,
@@ -670,8 +670,11 @@ export class OneBotActionRouter {
     if (groupOpenid === null) return this.badRequest(`未知 group_id：${String(params.group_id ?? '')}`, echo);
     const rawDuration = params.duration;
     const duration = typeof rawDuration === 'number' && Number.isFinite(rawDuration) ? Math.max(0, Math.floor(rawDuration)) : 1800;
+    if (params.user_id === undefined || params.user_id === null || String(params.user_id) === '') {
+      return this.badRequest('set_group_ban 需要 user_id；全员禁言请使用 set_group_whole_ban', echo);
+    }
     const memberOpenid = this.resolveUser(params.user_id) ?? undefined;
-    if (memberOpenid === undefined && params.user_id !== undefined && String(params.user_id) !== '0') {
+    if (memberOpenid === undefined && String(params.user_id) !== '0') {
       return this.badRequest('官方平台只允许对已知成员禁言；该 user_id 不在本地映射中', echo);
     }
     try {

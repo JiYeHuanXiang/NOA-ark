@@ -15,6 +15,8 @@
 import type { OfficialScope } from '../types.js';
 // MD5/SHA1 仅用于官方上传接口要求的文件校验字段（非安全用途），不能替换为其他算法。
 import { createHash } from 'node:crypto';
+import { lookup } from 'node:dns/promises';
+import { isIP } from 'node:net';
 
 const DEFAULT_BASE_URL = 'https://api.bot.qq.com';
 /** 官方 token 有效期较长；这里保守取 5 分钟提前刷新，避免临界过期。 */
@@ -24,13 +26,18 @@ export class RestApiError extends Error {
   readonly httpStatus?: number;
   readonly bizCode?: number;
   readonly bizMessage?: string;
+  readonly traceId?: string;
 
-  constructor(message: string, opts?: { httpStatus?: number; bizCode?: number; bizMessage?: string }) {
+  constructor(
+    message: string,
+    opts?: { httpStatus?: number; bizCode?: number; bizMessage?: string; traceId?: string },
+  ) {
     super(message);
     this.name = 'RestApiError';
     this.httpStatus = opts?.httpStatus;
     this.bizCode = opts?.bizCode;
     this.bizMessage = opts?.bizMessage;
+    this.traceId = opts?.traceId;
   }
 }
 
@@ -79,6 +86,9 @@ export interface RestOptions {
 interface TokenResponse {
   access_token?: string;
   expires_in?: number;
+  message?: string;
+  code?: number | string;
+  err_code?: number | string;
 }
 
 interface SendTextPayload {
@@ -286,17 +296,26 @@ export class Rest {
 
     const record = (payload ?? {}) as {
       message?: string;
+      err_code?: number | string;
       code?: number | string;
+      trace_id?: string;
       id?: string;
     };
+    // 官方 v2 错误体使用 err_code，token 接口使用 code；两者都可能是数字字符串。
+    const bizCode = numericCode(record.err_code) ?? numericCode(record.code);
+    const bizMessage = typeof record.message === 'string' ? record.message : undefined;
 
-    if (!response.ok) {
-      const bizCode = typeof record.code === 'number' ? record.code : undefined;
-      throw new RestApiError(record.message ?? `HTTP ${response.status}`, {
-        httpStatus: response.status,
-        bizCode,
-        bizMessage: record.message,
-      });
+    // 部分平台错误以 HTTP 200 返回，只有同时检查响应体错误码才能避免误判成功。
+    if (!response.ok || (bizCode !== undefined && bizCode !== 0)) {
+      throw new RestApiError(
+        bizMessage ?? (response.ok ? `平台返回错误码 ${bizCode ?? '未知'}` : `HTTP ${response.status}`),
+        {
+          httpStatus: response.status,
+          bizCode,
+          bizMessage,
+          traceId: typeof record.trace_id === 'string' ? record.trace_id : undefined,
+        },
+      );
     }
 
     return payload as T;
@@ -337,8 +356,14 @@ export class Rest {
       payload = null;
     }
     if (!response.ok || !payload?.access_token) {
-      throw new RestApiError(`获取 access_token 失败：HTTP ${response.status}`, {
+      const bizCode = numericCode(payload?.err_code) ?? numericCode(payload?.code);
+      const detail = typeof payload?.message === 'string' && payload.message !== ''
+        ? payload.message
+        : `HTTP ${response.status}`;
+      throw new RestApiError(`获取 access_token 失败：${detail}`, {
         httpStatus: response.status,
+        bizCode,
+        bizMessage: typeof payload?.message === 'string' ? payload.message : undefined,
       });
     }
     const ttl = (payload.expires_in ?? 0) > 0 ? payload.expires_in! * 1000 : undefined;
@@ -1062,8 +1087,9 @@ export class Rest {
     return (response.headers.get('etag') ?? '').replace(/"/g, '').trim().toLowerCase();
   }
 
-  /** 下载公网文件（素材上传用）；≤10MB 由调用方校验。 */
+  /** 下载公网文件（素材上传用）；限制协议 / 目标地址并边读边限制 10MB。 */
   private async downloadFile(url: string): Promise<Buffer> {
+    await assertPublicHttpUrl(url);
     let response: Response;
     try {
       response = await this.fetchImpl(url, { signal: AbortSignal.timeout(20_000) });
@@ -1073,8 +1099,32 @@ export class Rest {
     if (!response.ok) {
       throw new RestApiError(`下载素材图片失败：HTTP ${response.status}`, { httpStatus: response.status });
     }
-    const arrayBuffer = await response.arrayBuffer();
-    return Buffer.from(arrayBuffer);
+    const declared = Number(response.headers.get('content-length') ?? '');
+    if (Number.isFinite(declared) && declared > MEDIA_IMAGE_LIMIT) {
+      throw new RestApiError(`素材图片 ${declared} 字节超过 10MB 上限`);
+    }
+    if (response.body === null) return Buffer.alloc(0);
+
+    const reader = response.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done === true) break;
+        if (value === undefined) continue;
+        total += value.byteLength;
+        if (total > MEDIA_IMAGE_LIMIT) {
+          await reader.cancel().catch(() => undefined);
+          throw new RestApiError('素材图片超过 10MB 上限');
+        }
+        chunks.push(value);
+      }
+    } catch (err) {
+      if (err instanceof RestApiError) throw err;
+      throw new RestApiError(`读取素材图片失败：${err instanceof Error ? err.message : String(err)}`);
+    }
+    return Buffer.concat(chunks);
   }
 }
 
@@ -1147,6 +1197,77 @@ async function sleep(ms: number): Promise<void> {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** 官方错误码可能是数字或数字字符串。 */
+function numericCode(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string' && /^-?\d+$/.test(value.trim())) return Number(value.trim());
+  return undefined;
+}
+
+/** 素材图片下载前的 SSRF 防护：只允许 http/https，且目标不能落在内网地址。 */
+async function assertPublicHttpUrl(raw: string): Promise<void> {
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    throw new RestApiError(`素材图片 URL 无效：${raw}`);
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new RestApiError(`素材图片 URL 仅支持 http/https：${parsed.protocol}`);
+  }
+  const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  if (host === '' || host === 'localhost' || host.endsWith('.localhost')) {
+    throw new RestApiError('素材图片 URL 指向本机，已拒绝（SSRF 防护）');
+  }
+  if (isIP(host) !== 0) {
+    if (isPrivateAddress(host)) {
+      throw new RestApiError('素材图片 URL 指向内网地址，已拒绝（SSRF 防护）');
+    }
+    return;
+  }
+  let addresses: Array<{ address: string }>;
+  try {
+    addresses = await lookup(host, { all: true });
+  } catch {
+    throw new RestApiError(`素材图片 URL 主机无法解析：${host}`);
+  }
+  if (addresses.length === 0 || addresses.some((entry) => isPrivateAddress(entry.address))) {
+    throw new RestApiError('素材图片 URL 解析到内网地址，已拒绝（SSRF 防护）');
+  }
+}
+
+function isPrivateAddress(address: string): boolean {
+  const mapped = address.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/i);
+  if (mapped !== null) return isPrivateIpv4(mapped[1]!);
+  const version = isIP(address);
+  if (version === 4) return isPrivateIpv4(address);
+  if (version === 6) {
+    const lower = address.toLowerCase();
+    if (lower === '::' || lower === '::1') return true;
+    const first = parseInt(lower.split(':')[0] ?? '', 16);
+    if (!Number.isFinite(first)) return true;
+    if ((first & 0xfe00) === 0xfc00) return true; // fc00::/7 唯一本地地址
+    if ((first & 0xffc0) === 0xfe80) return true; // fe80::/10 链路本地
+    return false;
+  }
+  return true;
+}
+
+function isPrivateIpv4(address: string): boolean {
+  const parts = address.split('.').map(Number);
+  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) {
+    return true;
+  }
+  const [a, b] = parts as [number, number, number, number];
+  if (a === 0 || a === 10 || a === 127) return true;
+  if (a === 169 && b === 254) return true;
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  if (a === 192 && b === 168) return true;
+  if (a === 100 && b >= 64 && b <= 127) return true; // CGNAT
+  if (a >= 224) return true; // 组播 / 保留段
+  return false;
 }
 
 /** 被动参数 / 引用 / 键盘 / 召回 统一写入请求体。 */

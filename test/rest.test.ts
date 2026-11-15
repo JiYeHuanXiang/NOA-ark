@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { Rest } from '../src/official/rest.js';
+import { Rest, RestApiError } from '../src/official/rest.js';
 
 interface RecordedCall {
   url: string;
@@ -521,6 +521,70 @@ describe('Rest noa/1 endpoints', () => {
     expect(calls[2]?.url).toBe(
       'https://api.example.test/v2/groups/join_approval_strategy/st_1/execute',
     );
+  });
+});
+
+describe('Rest error handling', () => {
+  function makeRestWith(
+    fetchImpl: (input: unknown, init?: RequestInit) => Promise<Response>,
+  ): Rest {
+    return new Rest({
+      appId: 'app',
+      appSecret: 'secret',
+      baseUrl: 'https://api.example.test',
+      tokenBaseUrl: 'https://api.example.test',
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+  }
+
+  it('maps official err_code (including numeric strings) and trace_id', async () => {
+    const rest = makeRestWith(async (input) => {
+      const url = String(input);
+      if (url.includes('/app/getAppAccessToken')) return jsonResponse({ access_token: 'TOKEN' });
+      return jsonResponse(
+        { err_code: '40093001', message: 'part not finished', trace_id: 'tr_1' },
+        400,
+      );
+    });
+    const error = await rest
+      .sendText({ scope: 'group', targetId: 'GROUP_A' }, 'hi')
+      .catch((err: unknown) => err);
+    expect(error).toBeInstanceOf(RestApiError);
+    const apiError = error as RestApiError;
+    expect(apiError.bizCode).toBe(40093001);
+    expect(apiError.bizMessage).toBe('part not finished');
+    expect(apiError.traceId).toBe('tr_1');
+    expect(apiError.message).toBe('part not finished');
+  });
+
+  it('treats an HTTP 200 body with a business error code as a failure', async () => {
+    const rest = makeRestWith(async (input) => {
+      const url = String(input);
+      if (url.includes('/app/getAppAccessToken')) return jsonResponse({ access_token: 'TOKEN' });
+      return jsonResponse({ err_code: 40007, message: '消息被风控' });
+    });
+    await expect(
+      rest.sendText({ scope: 'c2c', targetId: 'USER_A' }, 'hi'),
+    ).rejects.toMatchObject({ bizCode: 40007, httpStatus: 200 });
+  });
+
+  it('reports token endpoint business errors instead of HTTP 200', async () => {
+    const rest = makeRestWith(async () => jsonResponse({ code: 100016, message: 'appid or secret invalid' }));
+    const error = await rest.getBotInfo().catch((err: unknown) => err);
+    expect(error).toBeInstanceOf(RestApiError);
+    expect((error as RestApiError).message).toContain('appid or secret invalid');
+    expect((error as RestApiError).bizCode).toBe(100016);
+  });
+
+  it('rejects material image URLs that point at local or private addresses', async () => {
+    const calls: string[] = [];
+    const rest = makeRestWith(async (input) => {
+      calls.push(String(input));
+      return jsonResponse({ access_token: 'TOKEN' });
+    });
+    await expect(rest.uploadMediaImage('http://127.0.0.1:9/a.png')).rejects.toThrow('SSRF');
+    await expect(rest.uploadMediaImage('http://localhost/a.png')).rejects.toThrow('SSRF');
+    expect(calls).toEqual([]);
   });
 });
 

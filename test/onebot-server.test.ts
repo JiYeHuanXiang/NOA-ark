@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { WebSocket } from 'ws';
+import { connect } from 'node:net';
 import { startOneBotServer } from '../src/onebot/server.js';
 import type { OneBotResponse } from '../src/onebot/actions.js';
 
@@ -110,5 +111,36 @@ describe('OneBot server (WS only)', () => {
     expect(failed).toBe(true);
     ws.terminate();
     await server.close();
+  });
+
+  it('survives a malformed request target in the upgrade path', async () => {
+    const server = await startOneBotServer({
+      conf: makeConf(),
+      logger: quietLogger,
+      selfId: () => 1,
+      dispatch: async () => ({ status: 'ok', retcode: 0, data: null, message: '' }),
+    });
+    try {
+      await new Promise<void>((resolve) => {
+        const socket = connect(server.port, '127.0.0.1', () => {
+          socket.write(
+            'GET http://[::1/ HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: Upgrade\r\n'
+            + 'Upgrade: websocket\r\n\r\n',
+          );
+        });
+        socket.on('close', () => resolve());
+        socket.on('error', () => resolve());
+        setTimeout(() => {
+          socket.destroy();
+          resolve();
+        }, 1_000);
+      });
+
+      // 进程仍存活：普通 HTTP 请求仍返回 426。
+      const res = await fetch(`http://127.0.0.1:${server.port}/`, { method: 'POST', body: '{}' });
+      expect(res.status).toBe(426);
+    } finally {
+      await server.close();
+    }
   });
 });

@@ -19,6 +19,8 @@ export const PSEUDO_MAX = 99_999_999_999_999;
 const SELF_RANGE = PSEUDO_MAX - PSEUDO_BASE + 1;
 const DEFAULT_CAPACITY = 200_000;
 const IDMAP_VERSION = 1;
+/** 新映射合并写入的窗口：避免每条消息同步重写整个文件。 */
+const SAVE_DEBOUNCE_MS = 1_000;
 
 /** `data/registry/idmap.json` 的持久化结构。 */
 export interface IdMapFile {
@@ -54,6 +56,7 @@ export class IdMapper {
   private readonly msgToPseudo = new Map<string, string>();
   private readonly pseudoToMsg = new Map<string, string>();
   private dirty = false;
+  private saveTimer: NodeJS.Timeout | undefined;
 
   constructor(options: IdMapperOptions) {
     this.file = options.file;
@@ -93,7 +96,7 @@ export class IdMapper {
     this.pseudoToOpenid.set(pseudo, key);
     this.dirty = true;
     this.evictIfNeeded();
-    this.saveIfDirty();
+    this.scheduleSave();
     return pseudo;
   }
 
@@ -114,7 +117,7 @@ export class IdMapper {
     this.pseudoToMsg.set(pseudo, key);
     this.dirty = true;
     this.evictIfNeeded();
-    this.saveIfDirty();
+    this.scheduleSave();
     return pseudo;
   }
 
@@ -184,13 +187,17 @@ export class IdMapper {
     });
     if (evicted > 0) {
       this.dirty = true;
-      this.saveIfDirty();
+      this.scheduleSave();
     }
     return evicted;
   }
 
-  /** 立即落盘（仅 dirty 时真正写入）。 */
+  /** 立即落盘（仅 dirty 时真正写入）；进程退出前由调用方显式调用。 */
   flush(): void {
+    if (this.saveTimer !== undefined) {
+      clearTimeout(this.saveTimer);
+      this.saveTimer = undefined;
+    }
     this.saveIfDirty();
   }
 
@@ -220,6 +227,16 @@ export class IdMapper {
       evicted += 1;
     }
     return evicted;
+  }
+
+  /** 合并窗口内的多次变更，只触发一次整文件写入。 */
+  private scheduleSave(): void {
+    if (this.saveTimer !== undefined) return;
+    this.saveTimer = setTimeout(() => {
+      this.saveTimer = undefined;
+      this.saveIfDirty();
+    }, SAVE_DEBOUNCE_MS);
+    this.saveTimer.unref?.();
   }
 
   private saveIfDirty(): void {

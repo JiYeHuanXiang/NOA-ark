@@ -103,6 +103,29 @@ describe('NoaExtensionService', () => {
     await expect(service.streamEnd('S1')).rejects.toThrow('不存在');
   });
 
+  it('keeps is_wakeup on every frame of a wakeup stream', async () => {
+    const { service, rest } = makeService();
+    const begin = await service.streamBegin('USER_A', { content: 'a', isWakeup: true });
+    expect(begin).toMatchObject({ streamId: 'S1', passive: false });
+    expect(rest.sendStreamFrame).toHaveBeenCalledWith('USER_A', expect.objectContaining({
+      index: 0,
+      isWakeup: true,
+    }));
+
+    await service.streamAppend('S1', 'ab');
+    expect(rest.sendStreamFrame).toHaveBeenLastCalledWith('USER_A', expect.objectContaining({
+      index: 1,
+      isWakeup: true,
+    }));
+
+    await service.streamEnd('S1');
+    expect(rest.sendStreamFrame).toHaveBeenLastCalledWith('USER_A', expect.objectContaining({
+      index: 2,
+      inputState: 10,
+      isWakeup: true,
+    }));
+  });
+
   it('creates a join policy once, then updates it and applies whitelist/execute', async () => {
     const store = {
       get: vi.fn(() => undefined as string | undefined),

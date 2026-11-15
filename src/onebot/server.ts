@@ -55,7 +55,14 @@ export async function startOneBotServer(options: OneBotServerOptions): Promise<O
   const wss = new WebSocketServer({ noServer: true });
 
   httpServer.on('upgrade', (req: IncomingMessage, socket, head) => {
-    const url = new URL(req.url ?? '/', 'http://127.0.0.1');
+    let url: URL;
+    try {
+      url = new URL(req.url ?? '/', 'http://127.0.0.1');
+    } catch {
+      // 畸形请求行（如 http://[::1/）不能把进程带崩。
+      socket.destroy();
+      return;
+    }
     if (url.pathname !== conf.wsPath) {
       socket.destroy();
       return;
@@ -75,7 +82,9 @@ export async function startOneBotServer(options: OneBotServerOptions): Promise<O
     logger.info(`OneBot WS 客户端已连接（当前 ${clients.size}）`);
     sendJson(ws, buildLifecycleEvent(options.selfId(), now));
     ws.on('message', (raw) => {
-      void handleWsMessage(ws, raw.toString());
+      void handleWsMessage(ws, raw.toString()).catch((err: unknown) => {
+        logger.warn(`OneBot WS 消息处理失败：${err instanceof Error ? err.message : String(err)}`);
+      });
     });
     ws.on('close', () => {
       clients.delete(ws);
@@ -100,7 +109,20 @@ export async function startOneBotServer(options: OneBotServerOptions): Promise<O
       return;
     }
     const params = isRecord(frame.params) ? frame.params : {};
-    const response = await options.dispatch(action, params, frame.echo);
+    let response: OneBotResponse;
+    try {
+      response = await options.dispatch(action, params, frame.echo);
+    } catch (err) {
+      logger.warn(`OneBot 动作 ${action} 执行失败：${err instanceof Error ? err.message : String(err)}`);
+      sendJson(ws, {
+        status: 'failed',
+        retcode: 1500,
+        data: null,
+        message: '内部错误',
+        echo: frame.echo,
+      });
+      return;
+    }
     sendJson(ws, response);
   }
 
