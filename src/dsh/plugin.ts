@@ -31,6 +31,7 @@ import {
   type TakeoverRawEvent,
   type TakeoverSink,
 } from './takeover.js';
+import { DshChatService, type DshHost } from './ai.js';
 
 export const name = 'noa-ark';
 /** 不依赖 dsh 服务；只需 Host 生命周期。 */
@@ -49,6 +50,8 @@ export interface DshPluginContext {
   effect?: (callback: () => () => unknown, label?: string) => unknown;
   /** Cordis 事件；volatile 字段保存后触发 loader/volatile-update。 */
   on?: (event: string, listener: () => unknown) => unknown;
+  /** Cordis 服务读取：按需取 agents / agentDefaultModel / sessions。 */
+  get?: (name: string) => unknown;
 }
 
 export interface DshTakeoverConf {
@@ -118,7 +121,18 @@ export function normalizePluginConfig(
 export function apply(ctx: DshPluginContext, rawConfig?: unknown): void {
   const logger = createDshLogger(ctx.logger);
   const normalized = normalizePluginConfig(rawConfig, (message) => logger.warn(`配置：${message}`));
-  const runtime = new TakeoverRuntime(normalized.config, normalized.takeover, logger);
+  const host: DshHost = {
+    get: (name) => {
+      if (typeof ctx.get !== 'function') return undefined;
+      try {
+        return ctx.get(name);
+      } catch {
+        return undefined;
+      }
+    },
+  };
+  const ai = new DshChatService(host, normalized.config.dshChat, logger);
+  const runtime = new TakeoverRuntime(normalized.config, normalized.takeover, logger, ai);
 
   let handle: TakeoverHandle | undefined;
   let disposed = false;
@@ -181,6 +195,7 @@ export class TakeoverRuntime implements TakeoverSink {
     private config: NoaConfig,
     private readonly takeoverConf: DshTakeoverConf,
     private readonly logger: Logger,
+    private readonly ai?: DshChatService,
   ) {
     this.tap = new EventTap(logger);
     this.gateway = createSyntheticGateway(this.tap);
@@ -229,6 +244,7 @@ export class TakeoverRuntime implements TakeoverSink {
     if (this.closed) return;
     const previous = this.config;
     this.config = next;
+    this.ai?.setConfig(next.dshChat);
     if (onebotBindingKey(previous) === onebotBindingKey(next)) return;
     if (this.bridge === undefined && !this.starting) {
       this.logger.info('OneBot 配置已更新，将在下次启动时生效');
@@ -291,6 +307,7 @@ export class TakeoverRuntime implements TakeoverSink {
     const bridge = this.bridge;
     this.bridge = undefined;
     await bridge?.close();
+    await this.ai?.close();
   }
 
   private afterStart(): void {
@@ -352,6 +369,8 @@ export class TakeoverRuntime implements TakeoverSink {
         mapper,
         rest,
         gateway: this.gateway,
+        dshChat: () => this.config.dshChat,
+        ...(this.ai === undefined ? {} : { ai: this.ai }),
       });
       if (this.closed) {
         await bridge.close();

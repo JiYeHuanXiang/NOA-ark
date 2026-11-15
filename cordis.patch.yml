@@ -26,3 +26,11 @@
           autoAckInteraction: false
           isolation: auto
           retryDelayMs: 30000
+        # 隔离生效时，外接 OneBot 程序用 noa_dsh_chat 把 QQ 输入交回 dsh AI。
+        # restrictTools=true（默认）只允许对话回复，拒绝一切读/写/改与命令工具。
+        dshChat:
+          enable: false
+          restrictTools: true
+          timeoutMs: 120000
+          sessionIdleMs: 1800000
+          cwd: ''

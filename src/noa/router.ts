@@ -5,7 +5,7 @@
  * 扩展未启用 / 场景不支持 → 1404；参数非法 / 平台调用失败 → 1400（message 带平台错误码）。
  */
 
-import type { NoaConf, NoaExtConf } from '../config.js';
+import type { DshChatConf, NoaConf, NoaExtConf } from '../config.js';
 import type { IdMapper } from '../core/idmap.js';
 import type { OneBotResponse } from '../onebot/actions.js';
 import type { NoaExtensionService } from './service.js';
@@ -14,12 +14,39 @@ const RET_OK = 0;
 const RET_BAD_REQUEST = 1400;
 const RET_UNSUPPORTED = 1404;
 
+/** `noa_dsh_chat` 的单次调用参数。 */
+export interface NoaAiChatRequest {
+  /** 用户输入，非空。 */
+  message: string;
+  /** 对话标识；相同值复用同一 dsh 会话，缺省则每次新建并在响应里回传。 */
+  conversationId?: string;
+  /** 覆盖配置里的单次超时（毫秒）。 */
+  timeoutMs?: number;
+}
+
+/** `noa_dsh_chat` 的回复。 */
+export interface NoaAiChatResult {
+  reply: string;
+  conversationId: string;
+  /** 本轮是否处于「仅对话回复」限制模式。 */
+  restricted: boolean;
+}
+
+/** dsh 插件注入的 AI 调用能力；独立进程模式没有实现。 */
+export interface NoaAiChat {
+  chat(request: NoaAiChatRequest): Promise<NoaAiChatResult>;
+}
+
 export interface NoaRouterDeps {
   conf: NoaConf;
   service: NoaExtensionService | null;
   mapper: IdMapper;
   idMode: 'mapped' | 'passthrough';
   logger: { warn(message: string): void };
+  /** dsh 专属 AI 对话配置；每次动作实时读取，支持设置页热更新。 */
+  dshChat: () => DshChatConf;
+  /** dsh 插件注入的 AI 调用能力；缺省表示当前不是 dsh 插件环境。 */
+  ai?: NoaAiChat;
 }
 
 export class NoaActionRouter {
@@ -93,6 +120,8 @@ export class NoaActionRouter {
         return this.streamEnd(service, params, echo);
       case 'noa_send_wakeup':
         return this.sendWakeup(service, params, echo);
+      case 'noa_dsh_chat':
+        return this.dshChat(params, echo);
       default:
         return this.fail(RET_UNSUPPORTED, `noa 扩展动作 ${action} 不存在或未实现（见 文档）`, echo);
     }
@@ -806,6 +835,58 @@ export class NoaActionRouter {
     try {
       await service.sendWakeup(userOpenid, message);
       return this.ok(echo, { sent: true });
+    } catch (err) {
+      return this.fail(RET_BAD_REQUEST, errText(err), echo);
+    }
+  }
+
+  // —— dsh 专属：AI 对话 ——
+
+  /**
+   * 隔离生效时，QQ 消息只到外接 OneBot 程序；这是把用户输入交回
+   * dsh AI 的唯一通道。只返回文本，不代替调用方发送消息。
+   */
+  private async dshChat(params: Record<string, unknown>, echo: unknown): Promise<OneBotResponse> {
+    if (this.deps.ai === undefined) {
+      return this.fail(RET_UNSUPPORTED, 'noa_dsh_chat 仅在 dsh 插件内可用（独立进程没有可调用的 dsh AI）', echo);
+    }
+    if (!this.deps.dshChat().enable) {
+      return this.fail(RET_UNSUPPORTED, 'dsh AI 对话未启用（配置 dshChat.enable=true 后启用）', echo);
+    }
+    const message = typeof params.message === 'string' ? params.message : '';
+    if (message.trim() === '') {
+      return this.fail(RET_BAD_REQUEST, 'noa_dsh_chat 需要非空 message', echo);
+    }
+    if (message.length > 32_000) {
+      return this.fail(RET_BAD_REQUEST, 'message 过长（上限 32000 字符）', echo);
+    }
+    const conversationRaw = stringOf(params.conversation_id).trim();
+    if (conversationRaw !== '' && !/^[A-Za-z0-9_.:-]{1,128}$/.test(conversationRaw)) {
+      return this.fail(
+        RET_BAD_REQUEST,
+        'conversation_id 只能包含字母、数字、下划线、点、冒号或连字符，长度 1–128',
+        echo,
+      );
+    }
+    let timeoutMs: number | undefined;
+    if (params.timeout_ms !== undefined) {
+      const value = Number(params.timeout_ms);
+      if (!Number.isFinite(value) || value < 1_000 || value > 600_000) {
+        return this.fail(RET_BAD_REQUEST, 'timeout_ms 必须是 1000–600000 之间的整数', echo);
+      }
+      timeoutMs = Math.floor(value);
+    }
+    try {
+      const result = await this.deps.ai.chat({
+        message,
+        ...(conversationRaw === '' ? {} : { conversationId: conversationRaw }),
+        ...(timeoutMs === undefined ? {} : { timeoutMs }),
+      });
+      return this.ok(echo, {
+        reply: result.reply,
+        conversation_id: result.conversationId,
+        restricted: result.restricted,
+      });
     } catch (err) {
       return this.fail(RET_BAD_REQUEST, errText(err), echo);
     }

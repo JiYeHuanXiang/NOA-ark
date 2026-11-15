@@ -97,6 +97,8 @@ npm start
 | `noa.ext.*` | `noa/1` 扩展开关，全部默认 `false`；未启用时对应段/动作明确失败 |
 | `noa.autoAckInteraction` | `INTERACTION_CREATE`（type 11/12）是否先自动 ACK `code=0`（默认 `true`） |
 | `noa.interactionRaw` | 互动事件里是否附带官方原始 `d`（默认 `false`） |
+| `dshChat.enable` | 仅 dsh 插件：允许 OneBot 客户端用 `noa_dsh_chat` 调用 dsh AI（默认 `false`） |
+| `dshChat.restrictTools` | 限制开关，默认 `true`：仅对话回复，拒绝一切读/写/改与命令工具；`false` 时给 AI 完整工具权限 |
 
 <details>
 <summary>完整配置示例（含 noa/1 开关）</summary>
@@ -132,6 +134,13 @@ npm start
     },
     "autoAckInteraction": true,
     "interactionRaw": false
+  },
+  "dshChat": {
+    "enable": false,
+    "restrictTools": true,
+    "timeoutMs": 120000,
+    "sessionIdleMs": 1800000,
+    "cwd": ""
   }
 }
 ```
@@ -173,6 +182,7 @@ npm start
 - **消息段**：`noa_markdown`（`msg_type=2`）、`noa_keyboard`（内嵌按钮）、`noa_card`（`msg_type=8` 图文卡片）。
 - **事件**：`INTERACTION_CREATE` → `notice/noa_interaction`；需要 `intents` 包含 `1<<26`。
 - **动作**：P1–P6 的 `noa_send_typing`、`noa_ack_interaction`、`noa_set_menu`、`noa_set_panel` / `noa_list_panels`、`noa_set_group_add_request_policy`、`noa_stream_begin` / `append` / `end`、`noa_send_wakeup`；P7 新增菜单/面板读写、入群申请列表与审批、禁言/黑名单/群状态、素材图片、分享链接等 18 个动作（见 文档 §11）。
+- **dsh 专属**：`noa_dsh_chat` 把 QQ 输入交回 dsh AI（受 `dshChat.*` 控制，独立进程不可用；见 文档 §12）。
 - **发送侧**：`send_*` 支持可选 `event_id` 被动回复；本地富媒体 >5MB 自动分片上传。
 - `get_version_info` 会返回 `noa_ext_version: "noa/1"` 与已启用能力列表。
 
@@ -185,6 +195,8 @@ npm start
 - 对外提供 OneBot 正向 / 反向 WS。
 
 默认 `takeover.isolation: auto`：**有 OneBot 客户端在线时，dsh-qqbot 暂停处理入站消息**（包括斜杠命令与 typing），避免 dsh 与外接 OneBot 程序同时回复；客户端全部断开后 dsh 自动恢复。
+
+隔离生效时，QQ 消息只到外接 OneBot 程序，dsh AI 不会看到它。需要由 dsh AI 回答时，外接程序调用 `noa_dsh_chat`（`dshChat.enable=true`）拿回文本回复，再自行发送。`dshChat.restrictTools`（默认 `true`）是限制开关：开启时 AI 只能对话，任何读文件 / 写文件 / 命令 / 子代理等工具调用都会被拒绝；关闭后 AI 拥有 dsh 完整工具权限。该开关在 dsh 设置页可热切换。
 
 ```bash
 npm run build

@@ -3,8 +3,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { IdMapper } from '../src/core/idmap.js';
-import { DEFAULT_NOA_EXT, type NoaConf, type NoaExtConf } from '../src/config.js';
-import { NoaActionRouter } from '../src/noa/router.js';
+import { DEFAULT_NOA_EXT, type DshChatConf, type NoaConf, type NoaExtConf } from '../src/config.js';
+import { NoaActionRouter, type NoaAiChat } from '../src/noa/router.js';
 import type { NoaExtensionService } from '../src/noa/service.js';
 
 function tempMapper(): IdMapper {
@@ -66,7 +66,22 @@ function makeService() {
   };
 }
 
-function makeRouter(conf: NoaConf, service = makeService()) {
+function dshChat(overrides: Partial<DshChatConf> = {}): DshChatConf {
+  return {
+    enable: false,
+    restrictTools: true,
+    timeoutMs: 120_000,
+    sessionIdleMs: 30 * 60_000,
+    cwd: '',
+    ...overrides,
+  };
+}
+
+function makeRouter(
+  conf: NoaConf,
+  service = makeService(),
+  options: { dshChat?: Partial<DshChatConf>; ai?: NoaAiChat } = {},
+) {
   const mapper = tempMapper();
   const router = new NoaActionRouter({
     conf,
@@ -74,6 +89,8 @@ function makeRouter(conf: NoaConf, service = makeService()) {
     mapper,
     idMode: 'mapped',
     logger: { warn: () => undefined },
+    dshChat: () => dshChat(options.dshChat),
+    ...(options.ai === undefined ? {} : { ai: options.ai }),
   });
   return { router, mapper, service };
 }
@@ -350,5 +367,59 @@ describe('NoaActionRouter', () => {
     const ok = await router.dispatch('noa_send_wakeup', { user_id: userId, message: '回来看看' }, undefined);
     expect(ok?.status).toBe('ok');
     expect(service.sendWakeup).toHaveBeenCalledWith('USER_A', '回来看看');
+  });
+
+  describe('noa_dsh_chat', () => {
+    it('fails closed outside the dsh plugin and when disabled', async () => {
+      const standalone = makeRouter(noaConf(), makeService(), { dshChat: { enable: true } });
+      const outside = await standalone.router.dispatch('noa_dsh_chat', { message: 'hi' }, undefined);
+      expect(outside?.retcode).toBe(1404);
+      expect(outside?.message).toContain('dsh 插件');
+
+      const ai: NoaAiChat = { chat: vi.fn() };
+      const disabled = makeRouter(noaConf(), makeService(), { ai });
+      const off = await disabled.router.dispatch('noa_dsh_chat', { message: 'hi' }, undefined);
+      expect(off?.retcode).toBe(1404);
+      expect(ai.chat).not.toHaveBeenCalled();
+    });
+
+    it('validates message, conversation_id and timeout', async () => {
+      const ai: NoaAiChat = { chat: vi.fn(async () => ({ reply: 'ok', conversationId: 'c', restricted: true })) };
+      const { router } = makeRouter(noaConf(), makeService(), { dshChat: { enable: true }, ai });
+
+      expect((await router.dispatch('noa_dsh_chat', { message: '   ' }, undefined))?.retcode).toBe(1400);
+      expect((await router.dispatch('noa_dsh_chat', { message: 'x'.repeat(32_001) }, undefined))?.retcode).toBe(1400);
+      expect((await router.dispatch('noa_dsh_chat', { message: 'x', conversation_id: 'bad id!' }, undefined))?.retcode)
+        .toBe(1400);
+      expect((await router.dispatch('noa_dsh_chat', { message: 'x', timeout_ms: 500 }, undefined))?.retcode).toBe(1400);
+      expect(ai.chat).not.toHaveBeenCalled();
+    });
+
+    it('returns the reply and passes conversation/timeout through', async () => {
+      const chat = vi.fn(async () => ({ reply: '你好', conversationId: 'peer-1', restricted: true }));
+      const { router } = makeRouter(noaConf(), makeService(), {
+        dshChat: { enable: true },
+        ai: { chat },
+      });
+
+      const result = await router.dispatch(
+        'noa_dsh_chat',
+        { message: '你好呀', conversation_id: 'peer-1', timeout_ms: 30_000 },
+        'e1',
+      );
+      expect(result?.status).toBe('ok');
+      expect(result?.data).toEqual({ reply: '你好', conversation_id: 'peer-1', restricted: true });
+      expect(chat).toHaveBeenCalledWith({ message: '你好呀', conversationId: 'peer-1', timeoutMs: 30_000 });
+    });
+
+    it('surfaces AI failures as 1400', async () => {
+      const { router } = makeRouter(noaConf(), makeService(), {
+        dshChat: { enable: true },
+        ai: { chat: vi.fn(async () => { throw new Error('模型不可用'); }) },
+      });
+      const result = await router.dispatch('noa_dsh_chat', { message: 'hi' }, undefined);
+      expect(result?.retcode).toBe(1400);
+      expect(result?.message).toContain('模型不可用');
+    });
   });
 });

@@ -61,6 +61,27 @@ export interface NoaConf {
   interactionRaw: boolean;
 }
 
+/**
+ * dsh 专属 AI 对话（OneBot 动作 `noa_dsh_chat`）。
+ *
+ * 只有作为 dsh 插件运行时才有 AI 可调用；独立进程模式下动作明确失败。
+ */
+export interface DshChatConf {
+  /** 允许外部 OneBot 进程调用 dsh 内的 AI；默认 false。 */
+  enable: boolean;
+  /**
+   * true（默认）：仅对话回复。AI 发起的任何工具调用都会被拒绝
+   * （不读文件、不写文件、不执行命令）。false：把完整 agent 工具集交给 AI。
+   */
+  restrictTools: boolean;
+  /** 单次调用超时（毫秒）。 */
+  timeoutMs: number;
+  /** 对话 agent 闲置回收时间（毫秒）；0 表示每次调用结束后立即回收。 */
+  sessionIdleMs: number;
+  /** agent 工作目录；空字符串表示使用 dsh 进程当前目录。 */
+  cwd: string;
+}
+
 export interface NoaConfig {
   appId: string;
   appSecret: string;
@@ -84,6 +105,7 @@ export interface NoaConfig {
   onebot: OneBotConf;
   milky: MilkyConf;
   noa: NoaConf;
+  dshChat: DshChatConf;
 }
 
 export const DEFAULT_NOA_EXT: NoaExtConf = {
@@ -133,6 +155,13 @@ export const DEFAULT_CONFIG: NoaConfig = {
     ext: { ...DEFAULT_NOA_EXT },
     autoAckInteraction: true,
     interactionRaw: false,
+  },
+  dshChat: {
+    enable: false,
+    restrictTools: true,
+    timeoutMs: 120_000,
+    sessionIdleMs: 30 * 60_000,
+    cwd: '',
   },
 };
 
@@ -206,6 +235,21 @@ export function validateConfig(config: NoaConfig): string[] {
   if (typeof config.noa?.interactionRaw !== 'boolean') {
     warnings.push('noa.interactionRaw 必须是布尔值');
   }
+  if (typeof config.dshChat?.enable !== 'boolean') {
+    warnings.push('dshChat.enable 必须是布尔值');
+  }
+  if (typeof config.dshChat?.restrictTools !== 'boolean') {
+    warnings.push('dshChat.restrictTools 必须是布尔值');
+  }
+  if (!Number.isInteger(config.dshChat?.timeoutMs) || config.dshChat.timeoutMs <= 0) {
+    warnings.push('dshChat.timeoutMs 必须是正整数');
+  }
+  if (!Number.isInteger(config.dshChat?.sessionIdleMs) || config.dshChat.sessionIdleMs < 0) {
+    warnings.push('dshChat.sessionIdleMs 必须是 >=0 的整数');
+  }
+  if (typeof config.dshChat?.cwd !== 'string') {
+    warnings.push('dshChat.cwd 必须是字符串');
+  }
   return warnings;
 }
 
@@ -246,6 +290,18 @@ function normalize(config: NoaConfig): NoaConfig {
   config.noa.ext = normalizeNoaExt(config.noa.ext);
   if (typeof config.noa.autoAckInteraction !== 'boolean') config.noa.autoAckInteraction = true;
   if (typeof config.noa.interactionRaw !== 'boolean') config.noa.interactionRaw = false;
+  if (typeof config.dshChat !== 'object' || config.dshChat === null) {
+    config.dshChat = { ...DEFAULT_CONFIG.dshChat };
+  }
+  if (typeof config.dshChat.enable !== 'boolean') config.dshChat.enable = false;
+  if (typeof config.dshChat.restrictTools !== 'boolean') config.dshChat.restrictTools = true;
+  if (!Number.isInteger(config.dshChat.timeoutMs) || config.dshChat.timeoutMs <= 0) {
+    config.dshChat.timeoutMs = DEFAULT_CONFIG.dshChat.timeoutMs;
+  }
+  if (!Number.isInteger(config.dshChat.sessionIdleMs) || config.dshChat.sessionIdleMs < 0) {
+    config.dshChat.sessionIdleMs = DEFAULT_CONFIG.dshChat.sessionIdleMs;
+  }
+  if (typeof config.dshChat.cwd !== 'string') config.dshChat.cwd = '';
   if (!Number.isInteger(config.dailyLimitPerPeer) || config.dailyLimitPerPeer <= 0) {
     config.dailyLimitPerPeer = DEFAULT_CONFIG.dailyLimitPerPeer;
   }

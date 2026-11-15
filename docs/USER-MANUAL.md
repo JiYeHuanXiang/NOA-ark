@@ -358,6 +358,7 @@ P7 新增（同样默认关闭）：
 | `noa_get_group_bot_state` | `groupAdmin` | 群 | 机器人群内状态（`recv_msg_setting` / `member_role` 等） |
 | `noa_upload_media_image` / `noa_list_media_images` / `noa_delete_media_image` | `material` | 全局 | 素材图片上传（URL/本地/`base64://`，≤10MB）/ 查询 / 删除 |
 | `noa_generate_url_link` | `share` | 全局 | 生成机器人分享链接；`callback_data` ≤32 |
+| `noa_dsh_chat` | `dshChat.enable`（仅 dsh 插件） | 全局 | 把 QQ 输入交回 dsh AI，返回 `{reply, conversation_id, restricted}`；`restrictTools` 控制是否禁止一切读写改工具（见 文档 §12） |
 
 ```jsonc
 { "action": "noa_stream_begin", "params": { "user_id": 10000000000002, "content": "正在生成…" } }

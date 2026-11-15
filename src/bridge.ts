@@ -5,7 +5,7 @@
 
 import path from 'node:path';
 import { readJson, writeJsonAtomic, safeSegment } from './store/json-store.js';
-import type { NoaConfig } from './config.js';
+import type { NoaConfig, DshChatConf } from './config.js';
 import type { Logger, OfficialScope } from './types.js';
 import { IdMapper } from './core/idmap.js';
 import { MsgSeqManager } from './core/msgseq.js';
@@ -43,7 +43,7 @@ import { MilkyActionRouter } from './milky/actions.js';
 import { startMilkyServer, type MilkyServerHandle } from './milky/server.js';
 import { interactionToNoaEvent } from './noa/events.js';
 import { JoinStrategyStore } from './noa/join-policy.js';
-import { NoaActionRouter } from './noa/router.js';
+import { NoaActionRouter, type NoaAiChat } from './noa/router.js';
 import { NoaExtensionService } from './noa/service.js';
 
 // —— 群目录 ——————————————————————————————
@@ -472,6 +472,10 @@ export interface BridgeOptions {
   mapper: IdMapper;
   rest: Rest;
   gateway: GatewayHandle;
+  /** dsh 插件注入的 AI 对话能力；独立进程模式不传。 */
+  ai?: NoaAiChat;
+  /** dsh 专属 AI 配置的实时读取器；缺省用启动时快照。 */
+  dshChat?: () => DshChatConf;
   now?: () => number;
 }
 
@@ -541,6 +545,8 @@ export async function startBridge(options: BridgeOptions): Promise<BridgeHandle>
     mapper,
     idMode,
     logger,
+    dshChat: options.dshChat ?? (() => config.dshChat),
+    ...(options.ai === undefined ? {} : { ai: options.ai }),
   });
 
   const onebotRouter = new OneBotActionRouter({

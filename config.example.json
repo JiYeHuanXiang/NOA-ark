@@ -28,5 +28,12 @@
     },
     "autoAckInteraction": true,
     "interactionRaw": false
+  },
+  "dshChat": {
+    "enable": false,
+    "restrictTools": true,
+    "timeoutMs": 120000,
+    "sessionIdleMs": 1800000,
+    "cwd": ""
   }
 }
