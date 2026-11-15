@@ -20,9 +20,9 @@ noa-ark
 - **OneBot v11**：38 个标准动作（其中 16 个平台无能力/未接线的动作明确拒绝）、消息 / 通知 / 请求事件、正向 WS 与反向 WS。
 - **稳定的伪 QQ 号**：官方只有 openid；`mapped` 模式会持久化映射成可反查的伪号。
 - **被动回复窗口**：按官方 `msg_id` + 递增 `msg_seq` 记账；超窗可显式失败或转主动消息。
-- **富媒体**：公网 URL、≤5MB 本地文件 / `base64://` 直传；入站图片/语音可缓存为本地文件。
+- **富媒体**：公网 URL、≤5MB 本地文件 / `base64://` 直传，>5MB 自动分片上传（官方硬上限 200MB）；入站图片/语音可缓存为本地文件。
 - **群成员**：列表、详情、移除成员（官方白名单接口，底层为批量接口）。
-- **可选扩展 `noa/1`**：markdown、内嵌键盘、图文卡片、互动事件、菜单/面板、入群自动审批、单聊流式与互动召回。
+- **可选扩展 `noa/1`**：markdown（含模板/素材图片）、内嵌键盘、图文卡片、互动事件、菜单/面板读写、入群申请与自动审批、群管理（禁言/黑名单/群状态）、单聊流式、互动召回、分享链接与补充通知事件。
 - **dsh 组合包**：可作为 DeepSeek Harness 插件加载，接管已运行的 `dsh-qqbot`，对外提供 OneBot 正/反向 WS，并与 dsh 做回复隔离。
 
 ## 快速开始
@@ -124,7 +124,11 @@ npm start
       "menu": false,
       "joinPolicy": false,
       "stream": false,
-      "wakeup": false
+      "wakeup": false,
+      "groupAdmin": false,
+      "material": false,
+      "share": false,
+      "events": false
     },
     "autoAckInteraction": true,
     "interactionRaw": false
@@ -150,7 +154,7 @@ npm start
 - **重复投递**：同一官方 `msg_id` 在 5 分钟内只向下游投递一次，覆盖网关重连、平台重试等场景。
 - **被动窗口**：群 5 分钟 / 5 条，单聊 60 分钟 / 4 条；超窗按 `passiveOverflow` 处理。
 - **主动消息**：受平台配额与用户开关限制，可能返回 `40034105`（无权限）或 `40034100`（超频）。
-- **富媒体**：文本与图片混排会拆成多条官方消息，各自消耗一次被动槽；大于 5MB 的本地文件目前明确失败（分片上传未实现）。
+- **富媒体**：文本与图片混排会拆成多条官方消息，各自消耗一次被动槽；本地文件 >5MB 自动走分片上传。
 - **群成员接口**：仅官方白名单机器人可用；平台错误 `11253` 会转成明确的 OneBot 失败。
 - **媒体缓存**：`get_image` / `get_record` 下载到 `~/.noa/data/cache/media`，单文件上限 20MB、20 秒超时；拒绝本机/内网字面量地址与跳入内网的重定向。
 - **明确拒绝**：好友列表、管理员任免、群名片、头衔、匿名、退群、群聊 @具体成员（标准文本通道）、合并转发、json/xml 卡片、消息撤回事件下发等。
@@ -168,7 +172,8 @@ npm start
 
 - **消息段**：`noa_markdown`（`msg_type=2`）、`noa_keyboard`（内嵌按钮）、`noa_card`（`msg_type=8` 图文卡片）。
 - **事件**：`INTERACTION_CREATE` → `notice/noa_interaction`；需要 `intents` 包含 `1<<26`。
-- **动作**：`noa_send_typing`、`noa_ack_interaction`、`noa_set_menu`、`noa_set_panel` / `noa_list_panels`、`noa_set_group_add_request_policy`、`noa_stream_begin` / `append` / `end`、`noa_send_wakeup`。
+- **动作**：P1–P6 的 `noa_send_typing`、`noa_ack_interaction`、`noa_set_menu`、`noa_set_panel` / `noa_list_panels`、`noa_set_group_add_request_policy`、`noa_stream_begin` / `append` / `end`、`noa_send_wakeup`；P7 新增菜单/面板读写、入群申请列表与审批、禁言/黑名单/群状态、素材图片、分享链接等 18 个动作（见 文档 §11）。
+- **发送侧**：`send_*` 支持可选 `event_id` 被动回复；本地富媒体 >5MB 自动分片上传。
 - `get_version_info` 会返回 `noa_ext_version: "noa/1"` 与已启用能力列表。
 
 ## dsh 插件：接管 dsh-qqbot
@@ -236,13 +241,19 @@ docs/                  协议映射、用户手册、noa/1、dsh 插件文档
 
 ## 已知限制与后续计划
 
-- 富媒体分片上传（>5MB）。
-- 互动事件 `event_id` 被动回复。
-- `noa/1` 灰度能力（菜单 / 面板 / 流式）的真机验证。
+- `noa/1` 灰度能力（菜单 / 面板 / 群管理 / 素材 / 流式）的真机验证；全员禁言端点真机确认。
 - 更多群管理接口。
 
 欢迎提交 issue / PR。修改协议映射或新增动作前，请先阅读 `文档` 的能力边界。
 
 ## License
 
-本仓库尚未包含 `LICENSE` 文件，也未声明开源许可证；在补充许可证前，请勿默认可以再分发。
+本项目以 **GNU Affero General Public License v3.0 or later（AGPL-3.0-or-later）** 发布，完整条款见 [LICENSE](LICENSE)。
+
+- 你可以自由使用、修改、分发本项目；分发衍生作品时须继续以 AGPL-3.0 授权并提供源码。
+- 修改后通过网络向用户提供服务时，须按 AGPL 第 13 条向这些用户提供对应的完整源码（Corresponding Source）。
+- 原样运行、不对外提供服务不触发额外的源码提供义务。
+
+### 治理说明
+
+本项目由个人立项维护。贡献请使用带 `Signed-off-by` 的提交（DCO），本项目不要求签署 CLA，贡献者保留其贡献的版权。若主仓库停止维护，社区可自由 fork、修改并以新名称继续发布，无需取得额外授权；继续发布时请遵守 AGPL 的源码提供义务。
