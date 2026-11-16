@@ -1,19 +1,11 @@
-/**
- * noa/1 扩展动作的官方实现（文档 §5 / §6）。
- *
- * 发送类动作复用桥接层的被动窗口 / 配额；管理类动作直接走官方 REST。
- * 本文件不依赖 OneBot 路由，便于单测替换 Rest 与 sender。
- */
-
 import type { OfficialScope } from '../types.js';
 import { RestApiError, type OfficialJoinRequest, type Rest, type StreamFrameResponse } from '../official/rest.js';
 import type { JoinStrategyStore } from './join-policy.js';
 
-/** 桥接层发送能力的只读视图；passive 预留由桥接层统一记账。 */
 export interface NoaSendBridge {
-  /** 领取一次被动槽；被动窗关闭且未启用 proactive 时抛错。 */
+
   reserve(scope: OfficialScope, targetOpenid: string): { msgId?: string; msgSeq?: number; passive: boolean };
-  /** 主动消息真正发送成功后记账（平台判定优先）。 */
+
   recordProactive(scope: OfficialScope, targetOpenid: string): void;
 }
 
@@ -65,28 +57,26 @@ interface StreamState {
   index: number;
   contentType: 'text' | 'markdown';
   inputMode: 'append' | 'replace';
-  /** 已成功下发的内容（replace 模式用于前缀校验）。 */
+
   sentContent: string;
   grant: { msgId?: string; msgSeq?: number };
-  /** 互动召回流：后续帧必须继续携带 is_wakeup。 */
+
   isWakeup: boolean;
   busy: boolean;
-  /** 最后一次成功活动时间；用于惰性清理长时间无活动的流。 */
+
   lastActiveAt: number;
 }
 
 const STREAM_RETRY_DELAYS_MS = [1_000, 2_000, 4_000];
-/** 放弃 end 的流最多保留 10 分钟；同时限制活跃流数量，避免内存常驻。 */
+
 const STREAM_TTL_MS = 10 * 60_000;
 const MAX_ACTIVE_STREAMS = 200;
 
 export class NoaExtensionService {
-  /** 流式状态只存在内存：进程重启后流丢失（文档 §6.1）。 */
+
   private readonly streams = new Map<string, StreamState>();
 
   constructor(private readonly deps: NoaServiceDeps) {}
-
-  // —— 单聊正在输入 ——
 
   async sendTyping(
     scope: OfficialScope,
@@ -105,13 +95,9 @@ export class NoaExtensionService {
     return { passive: grant.passive, seconds: clamped };
   }
 
-  // —— 互动 ——
-
   async ackInteraction(interactionId: string, code: number): Promise<void> {
     await this.deps.rest.ackInteraction(interactionId, code);
   }
-
-  // —— 菜单 / 面板 ——
 
   async setMenu(menu: Record<string, unknown>): Promise<{ version?: number }> {
     return this.deps.rest.setMenu(menu);
@@ -152,8 +138,6 @@ export class NoaExtensionService {
   ): Promise<void> {
     await this.deps.rest.updatePanelTarget(panelId, op, target);
   }
-
-  // —— 群管理（P7.2）——
 
   async listJoinRequests(
     groupOpenid: string,
@@ -242,8 +226,6 @@ export class NoaExtensionService {
     this.deps.strategyStore?.deleteByStrategyId(strategyId);
   }
 
-  // —— 素材 / 分享（P7.3）——
-
   async uploadMediaImage(
     file: string,
     options?: { fileName?: string; contentType?: string },
@@ -269,8 +251,6 @@ export class NoaExtensionService {
     return this.deps.rest.generateUrlLink(callbackData);
   }
 
-  // —— 入群自动审批策略 ——
-
   async setJoinPolicy(params: JoinPolicyParams): Promise<Record<string, unknown>> {
     const body: Record<string, unknown> = {};
     if (params.enable !== undefined) body.is_enable = params.enable ? 'on' : 'off';
@@ -288,7 +268,7 @@ export class NoaExtensionService {
       if (strategyId === '') throw new Error('官方创建审批策略未返回 strategy_id');
       this.deps.strategyStore?.set(params.groupOpenid, strategyId);
     } else {
-      // 只有 whitelist/execute 时不必发空 PATCH（官方会校验至少一个更新字段）。
+
       created = Object.keys(body).length === 0
         ? {}
         : await this.deps.rest.updateJoinApprovalStrategy(strategyId, body);
@@ -296,7 +276,7 @@ export class NoaExtensionService {
 
     const result: Record<string, unknown> = {
       strategy_id: strategyId,
-      // 只有 whitelist/execute 时没有策略响应，真实开关状态未知，返回空串而不是猜测。
+
       is_enable: stringOf(created.is_enable)
         || (params.enable === undefined ? '' : params.enable ? 'on' : 'off'),
       expire_at: stringOf(created.expire_at) || params.expireAt || '',
@@ -313,8 +293,6 @@ export class NoaExtensionService {
     }
     return result;
   }
-
-  // —— 单聊流式 ——
 
   async streamBegin(userOpenid: string, options: StreamBeginOptions): Promise<StreamBeginResult> {
     if (options.content.trim() === '') throw new Error('noa_stream_begin 的 content 不能为空');
@@ -409,14 +387,10 @@ export class NoaExtensionService {
     }
   }
 
-  // —— 互动召回 ——
-
   async sendWakeup(userOpenid: string, content: string): Promise<void> {
     if (content.trim() === '') throw new Error('noa_send_wakeup 的 message 不能为空');
     await this.deps.rest.sendWakeup(userOpenid, content);
   }
-
-  // —— helpers ——
 
   private pruneStreams(): void {
     const cutoff = Date.now() - STREAM_TTL_MS;
@@ -443,7 +417,6 @@ export class NoaExtensionService {
     }
   }
 
-  /** 429 / 平台 50002 按下一个 index 指数退避重试（1000/2000/4000ms，最多 3 次）。 */
   private async sendFrameWithRetry(
     userOpenid: string,
     options: Parameters<Rest['sendStreamFrame']>[1],
@@ -472,7 +445,6 @@ function stringOf(value: unknown): string {
   return '';
 }
 
-/** 入群申请记录：保留官方字段，并给出可直接用于 set_group_add_request 的 flag。 */
 function joinRequestToRecord(item: OfficialJoinRequest, groupOpenid: string): Record<string, unknown> {
   const record: Record<string, unknown> = {
     join_request_id: item.joinRequestId,

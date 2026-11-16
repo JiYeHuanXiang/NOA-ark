@@ -1,6 +1,7 @@
 {
   "meta": {
     "title": "NOA Ark OneBot Bridge",
-    "description": "Takes over the installed dsh-qqbot QQ connection and exposes OneBot v11 forward/reverse WebSocket, with reply isolation between dsh and OneBot clients."
+    "description": "Takes over the installed dsh-qqbot QQ connection and exposes OneBot v11 forward/reverse WebSocket, with reply isolation between dsh and OneBot clients. Open Settings → NOA Ark (or Plugins → noa-ark → Configure) to toggle the OneBot service, reply isolation and dsh AI chat.",
+    "detail": "docs/PLUGIN.md"
   }
 }

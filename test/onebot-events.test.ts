@@ -275,7 +275,7 @@ describe('officialEventToOneBotEvent', () => {
     });
   });
 
-  it('gates P7 notices behind noa.ext.events', () => {
+  it('gates supplemental notices behind noa.ext.events', () => {
     const { ctx, mapper } = makeCtx();
     const off = officialEventToOneBotEvent(
       { eventType: 'FRIEND_DEL', data: { user_openid: 'USER_F' } },

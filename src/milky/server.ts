@@ -1,14 +1,3 @@
-/**
- * Milky v1.3 通信服务器：
- *
- *   - POST /api/:api       API 调用（JSON 入参）
- *   - GET  /event          SSE（默认）；带 Upgrade: websocket 时升级为 WS
- *   - Authorization: Bearer <token> 或 ?access_token=
- *
- * 事件帧：`event: milky_event` + `data: <JSON>`；顶层结构：
- *   { time, self_id, event_type, data }
- */
-
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { WebSocketServer, type WebSocket } from 'ws';
@@ -33,7 +22,6 @@ export interface MilkyServerHandle {
 const HEARTBEAT_MS = 30_000;
 const MAX_BODY_BYTES = 1024 * 1024;
 
-/** 带 HTTP 状态码的内部错误，供顶层 catch 统一转成 JSON 响应。 */
 class HttpError extends Error {
   constructor(readonly status: number, message: string) {
     super(message);
@@ -112,7 +100,7 @@ export async function startMilkyServer(options: MilkyServerOptions): Promise<Mil
       });
       res.write(': connected\n\n');
       sseClients.add(res);
-      // SSE 长连接客户端异常断开时不能让未处理的 error 事件把进程带崩。
+
       res.on('error', () => {
         sseClients.delete(res);
       });
@@ -178,7 +166,7 @@ export async function startMilkyServer(options: MilkyServerOptions): Promise<Mil
         try {
           ws.send(json);
         } catch {
-          // ignore
+
         }
       }
     }
@@ -216,7 +204,7 @@ export async function startMilkyServer(options: MilkyServerOptions): Promise<Mil
         try {
           res.end();
         } catch {
-          // ignore
+
         }
       }
       sseClients.clear();
@@ -224,7 +212,7 @@ export async function startMilkyServer(options: MilkyServerOptions): Promise<Mil
         try {
           ws.close();
         } catch {
-          // ignore
+
         }
       }
       wss.close();
@@ -271,12 +259,11 @@ function readBody(req: IncomingMessage): Promise<string> {
   });
 }
 
-/** 统一 JSON 响应；客户端已断开时静默失败，不影响进程。 */
 function respondJson(res: ServerResponse, status: number, payload: unknown): void {
   try {
     if (!res.headersSent) res.writeHead(status, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(payload));
   } catch {
-    // ignore
+
   }
 }

@@ -58,7 +58,7 @@ describe('IdMapper', () => {
     mapper.pseudoOf('B');
     mapper.pseudoOf('C');
     expect(mapper.openidOf(pa)).toBeNull();
-    // 重新申领会分配新伪号（旧号不复用）
+
     const again = mapper.pseudoOf('A');
     expect(again).not.toBe(pa);
   });

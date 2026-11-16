@@ -1,10 +1,3 @@
-/**
- * noa/1 扩展动作路由（文档 §5 / §6）。
- *
- * 只处理 `noa_` 前缀的动作；非 noa 动作返回 null，由 OneBotActionRouter 继续处理。
- * 扩展未启用 / 场景不支持 → 1404；参数非法 / 平台调用失败 → 1400（message 带平台错误码）。
- */
-
 import type { DshChatConf, NoaConf, NoaExtConf } from '../config.js';
 import type { IdMapper } from '../core/idmap.js';
 import type { OneBotResponse } from '../onebot/actions.js';
@@ -14,25 +7,22 @@ const RET_OK = 0;
 const RET_BAD_REQUEST = 1400;
 const RET_UNSUPPORTED = 1404;
 
-/** `noa_dsh_chat` 的单次调用参数。 */
 export interface NoaAiChatRequest {
-  /** 用户输入，非空。 */
+
   message: string;
-  /** 对话标识；相同值复用同一 dsh 会话，缺省则每次新建并在响应里回传。 */
+
   conversationId?: string;
-  /** 覆盖配置里的单次超时（毫秒）。 */
+
   timeoutMs?: number;
 }
 
-/** `noa_dsh_chat` 的回复。 */
 export interface NoaAiChatResult {
   reply: string;
   conversationId: string;
-  /** 本轮是否处于「仅对话回复」限制模式。 */
+
   restricted: boolean;
 }
 
-/** dsh 插件注入的 AI 调用能力；独立进程模式没有实现。 */
 export interface NoaAiChat {
   chat(request: NoaAiChatRequest): Promise<NoaAiChatResult>;
 }
@@ -43,16 +33,15 @@ export interface NoaRouterDeps {
   mapper: IdMapper;
   idMode: 'mapped' | 'passthrough';
   logger: { warn(message: string): void };
-  /** dsh 专属 AI 对话配置；每次动作实时读取，支持设置页热更新。 */
+
   dshChat: () => DshChatConf;
-  /** dsh 插件注入的 AI 调用能力；缺省表示当前不是 dsh 插件环境。 */
+
   ai?: NoaAiChat;
 }
 
 export class NoaActionRouter {
   constructor(private readonly deps: NoaRouterDeps) {}
 
-  /** 非 noa 动作返回 null；noa 动作返回完整 OneBot 响应。 */
   async dispatch(
     action: string,
     params: Record<string, unknown>,
@@ -123,11 +112,9 @@ export class NoaActionRouter {
       case 'noa_dsh_chat':
         return this.dshChat(params, echo);
       default:
-        return this.fail(RET_UNSUPPORTED, `noa 扩展动作 ${action} 不存在或未实现（见 文档）`, echo);
+        return this.fail(RET_UNSUPPORTED, `noa 扩展动作 ${action} 不存在或未实现`, echo);
     }
   }
-
-  // —— 单聊正在输入 ——
 
   private async sendTyping(
     service: NoaExtensionService,
@@ -152,8 +139,6 @@ export class NoaActionRouter {
     }
   }
 
-  // —— 互动回应 ——
-
   private async ackInteraction(
     service: NoaExtensionService,
     params: Record<string, unknown>,
@@ -175,8 +160,6 @@ export class NoaActionRouter {
       return this.fail(RET_BAD_REQUEST, errText(err), echo);
     }
   }
-
-  // —— 菜单 / 面板 ——
 
   private async setMenu(
     service: NoaExtensionService,
@@ -338,8 +321,6 @@ export class NoaActionRouter {
     }
   }
 
-  // —— 入群自动审批策略 ——
-
   private async setJoinPolicy(
     service: NoaExtensionService,
     params: Record<string, unknown>,
@@ -390,8 +371,6 @@ export class NoaActionRouter {
       return this.fail(RET_BAD_REQUEST, errText(err), echo);
     }
   }
-
-  // —— 群管理：入群申请 / 禁言 / 黑名单 / 策略（P7.2）——
 
   private async listJoinRequests(
     service: NoaExtensionService,
@@ -647,8 +626,6 @@ export class NoaActionRouter {
     }
   }
 
-  // —— 素材 / 分享（P7.3）——
-
   private async uploadMediaImage(
     service: NoaExtensionService,
     params: Record<string, unknown>,
@@ -724,8 +701,6 @@ export class NoaActionRouter {
       return this.fail(RET_BAD_REQUEST, errText(err), echo);
     }
   }
-
-  // —— 单聊流式 ——
 
   private async streamBegin(
     service: NoaExtensionService,
@@ -816,8 +791,6 @@ export class NoaActionRouter {
     }
   }
 
-  // —— 互动召回 ——
-
   private async sendWakeup(
     service: NoaExtensionService,
     params: Record<string, unknown>,
@@ -840,12 +813,6 @@ export class NoaActionRouter {
     }
   }
 
-  // —— dsh 专属：AI 对话 ——
-
-  /**
-   * 隔离生效时，QQ 消息只到外接 OneBot 程序；这是把用户输入交回
-   * dsh AI 的唯一通道。只返回文本，不代替调用方发送消息。
-   */
   private async dshChat(params: Record<string, unknown>, echo: unknown): Promise<OneBotResponse> {
     if (this.deps.ai === undefined) {
       return this.fail(RET_UNSUPPORTED, 'noa_dsh_chat 仅在 dsh 插件内可用（独立进程没有可调用的 dsh AI）', echo);
@@ -892,13 +859,11 @@ export class NoaActionRouter {
     }
   }
 
-  // —— helpers ——
-
   private requireExt(key: keyof NoaExtConf, echo: unknown): OneBotResponse | null {
     if (this.deps.conf.ext[key]) return null;
     return this.fail(
       RET_UNSUPPORTED,
-      `noa 扩展「${key}」未启用（见 文档；配置 noa.ext.${key}=true 后启用）`,
+      `noa 扩展「${key}」未启用（配置 noa.ext.${key}=true 后启用）`,
       echo,
     );
   }
@@ -917,10 +882,6 @@ export class NoaActionRouter {
     return this.deps.idMode === 'passthrough' ? id : this.deps.mapper.openidOf(id);
   }
 
-  /**
-   * 群成员标识：既接受伪号 user_id，也接受原始 member_openid。
-   * mapped 模式下纯数字但不在映射表中的值视为无效伪号。
-   */
   private resolveMember(raw: unknown): string | null {
     const id = stringOf(raw);
     if (id === '') return null;
@@ -930,7 +891,6 @@ export class NoaActionRouter {
     return /^\d+$/.test(id) ? null : id;
   }
 
-  /** openid → OneBot 可见 ID（mapped 伪号 / passthrough 原串）。 */
   private exposeId(openid: string): number | string {
     if (openid === '') return 0;
     return this.deps.idMode === 'passthrough' ? openid : Number(this.deps.mapper.pseudoOf(openid));

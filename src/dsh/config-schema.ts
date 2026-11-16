@@ -1,14 +1,3 @@
-/**
- * dsh 设置页使用的插件 Config schema。
- *
- * dsh 只把声明了 `.volatile()` 的字段投影到设置表单；普通字段仍通过
- * profile 的 cordis.patch.yml 编辑。这里暴露 OneBot WS 的开关、模式、
- * 端口、路径、令牌、反向地址，以及 dsh AI 对话的启用/限制开关。
- *
- * schema 未声明的普通配置键（idMode、takeover、noa 等）由
- * schemastery 原样保留，继续走既有 normalizePluginConfig 合并逻辑。
- */
-
 import Schema from '@deepseek-ai/schemastery';
 
 const OneBotSchema = Schema.object({
@@ -42,6 +31,24 @@ const OneBotSchema = Schema.object({
     .description('反向 WS 下游地址列表，例如 ws://127.0.0.1:6700'),
 });
 
+const TakeoverSchema = Schema.object({
+  appId: Schema.string()
+    .default('')
+    .description('只接管该 AppID 的 QQBot；留空接管第一个出现的实例'),
+  autoAckInteraction: Schema.boolean()
+    .default(false)
+    .description('由 noa 自动 ACK INTERACTION_CREATE；默认交给 dsh-qqbot'),
+  isolation: Schema.union(['auto', 'always', 'off'])
+    .default('auto')
+    .volatile()
+    .description('回复隔离：auto=有 OneBot 客户端在线时暂停 dsh；always=始终暂停 dsh；off=不隔离'),
+  retryDelayMs: Schema.number()
+    .step(1)
+    .min(0)
+    .default(30000)
+    .description('桥启动失败后的重试间隔（毫秒）'),
+});
+
 const DshChatSchema = Schema.object({
   enable: Schema.boolean()
     .default(false)
@@ -69,5 +76,6 @@ const DshChatSchema = Schema.object({
 
 export const Config = Schema.object({
   onebot: OneBotSchema,
+  takeover: TakeoverSchema,
   dshChat: DshChatSchema,
 });

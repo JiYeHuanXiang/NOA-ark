@@ -1,38 +1,30 @@
-/**
- * 富媒体本地缓存：把官方消息附件 URL 落到本地文件，供 OneBot get_image / get_record 使用。
- *
- * 官方附件 URL 带 TTL，旧程序无法长期复用；缓存按 URL 哈希命名，重复调用同一 URL
- * 直接命中本地文件。只接受 http/https，大小与超时都有上限，避免被异常链接拖垮进程。
- */
-
 import { createHash } from 'node:crypto';
 import { existsSync, statSync } from 'node:fs';
 import { mkdir, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 export interface MediaCacheOptions {
-  /** 缓存目录（不存在时自动创建）。 */
+
   dir: string;
-  /** 单文件大小上限，默认 20MB。 */
+
   maxBytes?: number;
-  /** 下载超时，默认 20 秒。 */
+
   timeoutMs?: number;
-  /** 测试注入：替换全局 fetch。 */
+
   fetchImpl?: typeof fetch;
 }
 
 export interface MediaCacheResult {
-  /** 本地绝对路径。 */
+
   path: string;
   size: number;
-  /** 是否命中已有缓存。 */
+
   cached: boolean;
 }
 
 const DEFAULT_MAX_BYTES = 20 * 1024 * 1024;
 const DEFAULT_TIMEOUT_MS = 20_000;
 
-/** 官方 CDN 常见 content-type → 扩展名；未知类型用 .bin。 */
 const EXT_BY_CONTENT_TYPE: Record<string, string> = {
   'image/jpeg': '.jpg',
   'image/jpg': '.jpg',
@@ -63,7 +55,6 @@ export class MediaCache {
     this.fetchImpl = options.fetchImpl ?? fetch;
   }
 
-  /** 下载（或命中缓存）一个 http/https 附件；失败抛 Error（中文原因）。 */
   async fetch(uri: string): Promise<MediaCacheResult> {
     let url: URL;
     try {
@@ -108,7 +99,6 @@ export class MediaCache {
     return { path: file, size: buffer.length, cached: false };
   }
 
-  /** 手动跟随最多 3 次重定向，并对每一跳重新做内网校验。 */
   private async fetchFollowingRedirects(url: URL, signal: AbortSignal): Promise<Response> {
     let current = url;
     for (let hop = 0; hop <= 3; hop += 1) {
@@ -132,7 +122,6 @@ export class MediaCache {
     throw new Error('附件重定向次数过多（最多 3 次）');
   }
 
-  /** 已缓存文件查找：哈希同名但扩展名可能因 content-type 不同而变化，逐个已知扩展名探测。 */
   private findExisting(key: string): MediaCacheResult | null {
     for (const ext of ['', ...new Set(Object.values(EXT_BY_CONTENT_TYPE)), '.bin']) {
       const file = path.join(this.dir, `${key}${ext}`);
@@ -152,7 +141,6 @@ function extensionOf(url: URL, contentType: string): string {
   return '.bin';
 }
 
-/** 边读边计数：chunked / 无 content-length 的响应也不能突破内存上限。 */
 async function readBoundedBody(response: Response, maxBytes: number): Promise<Buffer> {
   if (response.body === null) {
     const buffer = Buffer.from(await response.arrayBuffer());
@@ -183,7 +171,6 @@ async function readBoundedBody(response: Response, maxBytes: number): Promise<Bu
   return Buffer.concat(chunks);
 }
 
-/** 拒绝本机/内网地址，避免 get_image/get_record 被当成内网探测代理。 */
 function assertPublicHost(url: URL): void {
   const host = url.hostname.toLowerCase();
   if (

@@ -49,7 +49,7 @@ describe('MsgSeqManager', () => {
     mgr.openWindow('MSG_4', now);
     expect(mgr.acquire('MSG_4', 'group').msgSeq).toBe(1);
     now += 5_000;
-    mgr.openWindow('MSG_4', now); // duplicate delivery
+    mgr.openWindow('MSG_4', now);
     expect(mgr.acquire('MSG_4', 'group').msgSeq).toBe(2);
   });
 

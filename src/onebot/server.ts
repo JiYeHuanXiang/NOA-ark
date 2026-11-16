@@ -1,14 +1,3 @@
-/**
- * OneBot v11 通信服务器 —— 仅 WebSocket（正向服务端）。
- *
- *   - 正向 WebSocket：默认 /ws，帧格式 {action, params, echo}
- *   - 鉴权：`Authorization: Bearer <token>` 或 `?access_token=`
- *   - 普通 HTTP 请求一律返回 426 Upgrade Required：HTTP API 与 HTTP POST 上报已移除
- *   - 每 30 秒广播 meta heartbeat
- *
- * 反向 WebSocket 客户端见 reverse.ts。
- */
-
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { WebSocketServer, type WebSocket } from 'ws';
@@ -23,17 +12,17 @@ export interface OneBotServerOptions {
   selfId: () => number | string;
   now?: () => number;
   dispatch: (action: string, params: Record<string, unknown>, echo: unknown) => Promise<OneBotResponse>;
-  /** 反向 WS 客户端等附加广播器（由桥接层注入）。 */
+
   extraBroadcasters?: Array<(event: unknown) => void | Promise<void>>;
 }
 
 export interface OneBotServerHandle {
-  /** ws:// 地址（便于日志展示）。 */
+
   url: string;
   port: number;
-  /** 当前已连接的正向 WS 客户端数（隔离判定用）。 */
+
   readonly clients: number;
-  /** 广播事件到所有 WS 客户端与附加广播器。 */
+
   broadcast(event: unknown): Promise<void>;
   close(): Promise<void>;
 }
@@ -47,7 +36,7 @@ export async function startOneBotServer(options: OneBotServerOptions): Promise<O
   let heartbeat: NodeJS.Timeout | undefined;
 
   const httpServer: Server = createServer((_req: IncomingMessage, res: ServerResponse) => {
-    // HTTP API / HTTP 上报已按需求移除；保留底层 HTTP 服务器仅作为 WS 升级载体。
+
     res.writeHead(426, { 'Content-Type': 'text/plain; charset=utf-8' });
     res.end('noa-ark: HTTP API removed; connect via WebSocket at the configured wsPath');
   });
@@ -59,7 +48,7 @@ export async function startOneBotServer(options: OneBotServerOptions): Promise<O
     try {
       url = new URL(req.url ?? '/', 'http://127.0.0.1');
     } catch {
-      // 畸形请求行（如 http://[::1/）不能把进程带崩。
+
       socket.destroy();
       return;
     }
@@ -168,7 +157,7 @@ export async function startOneBotServer(options: OneBotServerOptions): Promise<O
         try {
           ws.close();
         } catch {
-          // ignore
+
         }
       }
       wss.close();
@@ -189,7 +178,7 @@ function sendJson(ws: WebSocket, payload: unknown): void {
   try {
     ws.send(JSON.stringify(payload));
   } catch {
-    // 单客户端发送失败不影响其他连接
+
   }
 }
 

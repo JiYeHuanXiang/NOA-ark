@@ -136,7 +136,6 @@ describe('OneBot server (WS only)', () => {
         }, 1_000);
       });
 
-      // 进程仍存活：普通 HTTP 请求仍返回 426。
       const res = await fetch(`http://127.0.0.1:${server.port}/`, { method: 'POST', body: '{}' });
       expect(res.status).toBe(426);
     } finally {

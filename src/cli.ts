@@ -1,13 +1,5 @@
-/**
- * noa-ark CLI
- *
- *   noa-ark start    连接官方 QQ 网关并启动 OneBot v11 兼容层
- *   noa-ark doctor   打印配置、凭据、端口与数据目录自检
- *   noa-ark version
- */
-
 import path from 'node:path';
-import { loadConfig, resolveCredentials, maskedAppId, enabledNoaExt, type NoaConfig } from './config.js';
+import { loadConfig, resolveCredentials, maskedAppId, enabledNoaExt } from './config.js';
 import { createConsoleLogger, redact } from './types.js';
 import { ensureDir, dataDir as resolveDataDir, safeSegment } from './store/json-store.js';
 import { IdMapper } from './core/idmap.js';
@@ -16,7 +8,7 @@ import { connectGateway } from './official/gateway.js';
 import { startBridge } from './bridge.js';
 import { VERSION } from './version.js';
 
-const USAGE = `noa-ark ${VERSION} — NOA 方舟计划：QQ 官方机器人 → OneBot v11 兼容层
+const USAGE = `noa-ark ${VERSION} — QQ 官方机器人 → OneBot v11 适配器
 
 用法：
   noa-ark start      连接官方网关并启动 OneBot v11 服务
@@ -32,7 +24,7 @@ const USAGE = `noa-ark ${VERSION} — NOA 方舟计划：QQ 官方机器人 → 
   NOA_HOME（默认 ~/.noa）→ data/
 `;
 
-async function commandStart(argv: string[]): Promise<void> {
+async function commandStart(): Promise<void> {
   const logger = createConsoleLogger(process.env.NOA_DEBUG === '1');
   const config = loadConfig(undefined, (message) => logger.warn(`配置：${message}`));
   if (config.noa.ext.interaction && (config.intents & (1 << 26)) === 0) {
@@ -104,7 +96,7 @@ async function commandStart(argv: string[]): Promise<void> {
 
   try {
     await gateway.ready;
-    logger.info('NOA 方舟适配器已上线，等待事件');
+    logger.info('noa-ark 已启动，等待事件');
   } catch (error) {
     logger.error(`QQ 网关未就绪：${error instanceof Error ? redact(error.message) : String(error)}`);
   }
@@ -120,8 +112,6 @@ async function commandStart(argv: string[]): Promise<void> {
   void gateway.done.then(() => {
     if (process.exitCode === undefined) shutdown(0);
   });
-
-  void argv;
 }
 
 function commandDoctor(): void {
@@ -132,15 +122,15 @@ function commandDoctor(): void {
   const noaExtLine = enabledExt.length === 0
     ? '（全部关闭）'
     : `${enabledExt.join(', ')}${config.noa.ext.interaction && (config.intents & (1 << 26)) === 0
-      ? '；⚠️ 需要 intents 包含 1<<26'
+      ? '；需要 intents 包含 1<<26'
       : ''}`;
 
   const lines = [
     `noa-ark 自检（${VERSION}）`,
     `1. 配置：${process.env.NOA_CONFIG ?? path.join(process.env.NOA_HOME ?? path.join(process.env.HOME ?? '', '.noa'), 'config.json')}`,
     `2. 凭据：${credentials === null
-      ? '❌ 未找到（设置 NOA_APP_ID / NOA_APP_SECRET）'
-      : `✅ ${maskedAppId(credentials.appId)}（来源：环境变量）`}`,
+      ? '未找到（设置 NOA_APP_ID / NOA_APP_SECRET）'
+      : `${maskedAppId(credentials.appId)}（来源：环境变量）`}`,
     `3. ID 模式：${config.idMode}${config.idMode === 'mapped' ? '（openid → 稳定伪 QQ 号）' : '（openid 直通）'}`,
     `4. 被动超窗策略：${config.passiveOverflow}；网关 intents：${config.intents > 0
       ? String(config.intents)
@@ -156,7 +146,6 @@ function commandDoctor(): void {
     `7. noa/1 扩展：${noaExtLine}`,
     `8. 数据目录：${root}`,
     `9. 映射文件：${path.join(root, 'registry', safeSegment(credentials?.appId ?? 'unbound'), 'groups.json')} 与 idmap.json`,
-    '10. 平台红线：不涉及协议逆向、不模拟客户端登录（仅官方开放平台能力）',
   ];
   console.info(lines.join('\n'));
   if (credentials === null) process.exitCode = 1;
@@ -166,7 +155,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   const command = argv[0];
   switch (command) {
     case 'start':
-      await commandStart(argv.slice(1));
+      await commandStart();
       return;
     case 'doctor':
       commandDoctor();

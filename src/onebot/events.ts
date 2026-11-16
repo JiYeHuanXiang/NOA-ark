@@ -1,12 +1,3 @@
-/**
- * OneBot v11 事件构造：官方事件 → OneBot v11 事件对象。
- *
- * 依据 文档 §3.2：message / notice / request / meta_event 四类。
- * 字段补齐：sender（user_id/nickname/card/role/title）、anonymous=null、
- * font=0、message（段数组）、raw_message（CQ 串）。
- * ID 经 IdMapper 暴露（mapped=伪 int64 数值，passthrough=透传字符串）。
- */
-
 import type { IdMapper } from '../core/idmap.js';
 import {
   type OfficialArkData,
@@ -15,15 +6,12 @@ import {
   type AnyOneBotSegment,
   type OneBotSegment,
   arkDataToText,
-  attachmentsToSegments,
   msgElementsToSegments,
   officialPartsToSegments,
   parseOfficialContent,
   segmentsToCQ,
 } from '../core/segments.js';
-import type { OfficialScope } from '../types.js';
 
-/** 官方原始事件（字段兼容 snake_case 与 camelCase）。 */
 export interface OfficialEvent {
   eventType: string;
   data: Record<string, unknown>;
@@ -32,11 +20,11 @@ export interface OfficialEvent {
 export interface OneBotEventContext {
   mapper: IdMapper;
   idMode: 'mapped' | 'passthrough';
-  /** 机器人自身 openid（用于把 @机器人 还原成 self_id；未知时用 AppID）。 */
+
   selfOpenid: string;
-  /** 时间戳缺失时的兜底（毫秒）。 */
+
   now: () => number;
-  /** noa.ext.events：是否投递 P7 补充通知事件（默认关闭）。 */
+
   noaEvents?: boolean;
 }
 
@@ -80,9 +68,9 @@ export interface OneBotMessageEvent extends OneBotEventBase {
     title?: string;
   };
   anonymous: null;
-  /** noa 扩展：本消息是否显式 @ 了机器人（群聊按事件类型/mentions/content 判定）。 */
+
   at_me: boolean;
-  /** noa 扩展：本消息是否发给机器人（群聊=被 @；私聊恒为 true）。 */
+
   to_me: boolean;
 }
 
@@ -110,14 +98,12 @@ export interface OneBotFriendAddEvent extends OneBotEventBase {
   user_id: number | string;
 }
 
-/** noa.ext.events：用户删除机器人。 */
 export interface OneBotFriendDelEvent extends OneBotEventBase {
   post_type: 'notice';
   notice_type: 'noa_friend_del';
   user_id: number | string;
 }
 
-/** noa.ext.events：群管理员开启/关闭机器人主动消息通知（GROUP_MSG_RECEIVE / REJECT）。 */
 export interface OneBotGroupMsgSettingEvent extends OneBotEventBase {
   post_type: 'notice';
   notice_type: 'noa_group_msg_setting';
@@ -126,7 +112,6 @@ export interface OneBotGroupMsgSettingEvent extends OneBotEventBase {
   enabled: boolean;
 }
 
-/** noa.ext.events：用户开启/关闭机器人主动消息推送（C2C_MSG_RECEIVE / REJECT）。 */
 export interface OneBotC2cMsgSettingEvent extends OneBotEventBase {
   post_type: 'notice';
   notice_type: 'noa_c2c_msg_setting';
@@ -134,7 +119,6 @@ export interface OneBotC2cMsgSettingEvent extends OneBotEventBase {
   enabled: boolean;
 }
 
-/** noa.ext.events：订阅消息授权状态变更。 */
 export interface OneBotSubscribeStatusEvent extends OneBotEventBase {
   post_type: 'notice';
   notice_type: 'noa_subscribe_status';
@@ -167,13 +151,13 @@ export interface OneBotGroupRequestEvent extends OneBotEventBase {
   user_id: number | string;
   comment: string;
   flag: string;
-  /** 官方 join_request_id（审批接口回传键；flag 内已编码）。 */
+
   join_request_id?: string;
-  /** 申请人 openid（非伪号；标准 flag 的组成部分）。 */
+
   member_openid?: string;
-  /** 官方 verify_info（verify_message / admin_review_qa）。 */
+
   verify_info?: Record<string, unknown>;
-  /** 官方标记的自动审批结果（若下发）。 */
+
   auto_approved?: boolean;
 }
 
@@ -217,11 +201,6 @@ function parseTimestamp(raw: string | undefined, fallback: number): number {
   return Number.isNaN(parsed) ? fallback : parsed;
 }
 
-/**
- * 官方事件 → OneBot v11 事件。
- *
- * 返回 null 表示该官方事件类型无 v11 对应语义（适配器仅记录日志）。
- */
 export function officialEventToOneBotEvent(
   event: OfficialEvent,
   ctx: OneBotEventContext,
@@ -265,7 +244,6 @@ export function officialEventToOneBotEvent(
         resolve: resolveMention,
       });
 
-      // 全量模式下引用/聊天记录/并行消息的正文在 msg_elements 里，content 可能是空白。
       const elements = Array.isArray(data.msg_elements) ? data.msg_elements : [];
       if (content.trim() === '') {
         dropBlankText(segments);
@@ -273,15 +251,14 @@ export function officialEventToOneBotEvent(
       if (content.trim() === '' && elements.length > 0) {
         segments.push(...msgElementsToSegments(elements));
       }
-      // 结构化卡片：正文为空且没有元素可展开时，降级为 [卡片:标题]。
+
       if (content.trim() === '' && elements.length === 0 && isRecord(data.ark_data)) {
         const cardText = arkDataToText(data.ark_data as OfficialArkData);
         if (cardText !== '') segments.push({ type: 'text', data: { text: cardText } });
       }
 
       const atMe = isGroupMessageAtMe(event.eventType, data, parts, ctx.selfOpenid);
-      // GROUP_AT_MESSAGE_CREATE 的 content 已被平台去掉 @ 前缀；补回 at 段，
-      // 保证按「被 @ 才响应」判断的旧程序行为一致。
+
       if (atMe && !hasAtSelf(segments, selfId)) {
         segments.unshift({ type: 'at', data: { qq: String(selfId) } });
       }
@@ -406,8 +383,7 @@ export function officialEventToOneBotEvent(
       const verifyInfo = isRecord(data.verify_info) ? data.verify_info : undefined;
       const comment = readString(data, 'comment', 'msg')
         || (verifyInfo === undefined ? '' : readString(verifyInfo, 'verify_message'));
-      // 新端点需要 group + member + join_request_id 三要素；旧事件只有 event_seq。
-      // 缺少必要信息时不猜测，flag 留空，由 set_group_add_request 明确 1400。
+
       const canUseNewEndpoint = joinRequestId !== '' && initiator !== '';
       const canUseLegacyEndpoint = !canUseNewEndpoint && joinRequestId === '' && legacyRequestId !== '';
       return {
@@ -506,15 +482,6 @@ export function officialEventToOneBotEvent(
   }
 }
 
-/**
- * 群消息是否 @ 了机器人。
- *
- * 判定来源（任一成立）：
- *   1. GROUP_AT_MESSAGE_CREATE 事件类型本身（官方会去掉 content 里的 @ 前缀，
- *      且 mentions 不含机器人自身）；
- *   2. content 里的 `<@self>` / `<qqbot-at-user id="self"/>` 标记；
- *   3. mentions 条目的 `is_you=true`，或 id / user_openid / member_openid 等于机器人 openid。
- */
 function isGroupMessageAtMe(
   eventType: string,
   data: Record<string, unknown>,
@@ -541,7 +508,6 @@ function isGroupMessageAtMe(
   return false;
 }
 
-/** 段数组里是否已有指向机器人自身的 at 段（避免重复补 @）。 */
 function hasAtSelf(segments: readonly OneBotSegment[], selfId: number | string): boolean {
   const self = String(selfId);
   return segments.some(
@@ -549,7 +515,6 @@ function hasAtSelf(segments: readonly OneBotSegment[], selfId: number | string):
   );
 }
 
-/** 去掉纯空白文本段（官方元素类消息的 content 常为 " "）。 */
 function dropBlankText(segments: OneBotSegment[]): void {
   for (let i = segments.length - 1; i >= 0; i -= 1) {
     const segment = segments[i];
@@ -561,7 +526,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-/** 心跳 / 生命周期 meta 事件（由连接层定期与连接时构造）。 */
 export function buildHeartbeatEvent(
   selfId: number | string,
   intervalMs: number,

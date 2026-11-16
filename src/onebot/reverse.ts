@@ -1,13 +1,3 @@
-/**
- * OneBot v11 反向 WebSocket 客户端（文档 §3.1）。
- *
- * 适配器主动连接旧程序提供的 URL；连上后立即推送 lifecycle 事件，
- * 之后所有事件经广播推送；对端在同一条连接上发 {action, params, echo}，
- * 适配器回 {status, retcode, data, message, echo}。
- *
- * 断线按指数退避重连；close() 时停止全部循环。
- */
-
 import { WebSocket } from 'ws';
 import type { OneBotResponse } from './actions.js';
 import { buildLifecycleEvent } from './events.js';
@@ -19,13 +9,13 @@ export interface ReverseOptions {
   selfId: () => number | string;
   now?: () => number;
   dispatch: (action: string, params: Record<string, unknown>, echo: unknown) => Promise<OneBotResponse>;
-  /** 连接旧程序时附带的 Authorization（可选）。 */
+
   accessToken?: string;
   reconnectDelayMs?: number;
 }
 
 export interface ReverseHandle {
-  /** 广播事件到全部在线反向连接。 */
+
   broadcast(event: unknown): void;
   close(): void;
   readonly connections: number;
@@ -74,7 +64,7 @@ export function startReverseClients(options: ReverseOptions): ReverseHandle {
         try {
           ws.send(JSON.stringify(buildLifecycleEvent(options.selfId(), now)));
         } catch {
-          // ignore
+
         }
       });
 
@@ -128,7 +118,7 @@ export function startReverseClients(options: ReverseOptions): ReverseHandle {
     try {
       ws.send(JSON.stringify(payload));
     } catch {
-      // ignore
+
     }
   }
 
@@ -142,7 +132,7 @@ export function startReverseClients(options: ReverseOptions): ReverseHandle {
         try {
           ws.send(text);
         } catch {
-          // ignore single socket
+
         }
       }
     },
@@ -154,7 +144,7 @@ export function startReverseClients(options: ReverseOptions): ReverseHandle {
         try {
           ws.close();
         } catch {
-          // ignore
+
         }
       }
       sockets.clear();

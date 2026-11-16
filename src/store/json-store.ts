@@ -4,12 +4,6 @@ import path, { dirname } from 'node:path';
 
 export type CorruptHandler = (file: string, backup: string, error: unknown) => void;
 
-/**
- * Parse a JSON file, quarantining a corrupt one before returning fallback.
- *
- * Directly treating a corrupt file as empty would let the next write
- * overwrite the user's only copy — so keep the scene intact.
- */
 export function readJson<T>(file: string, fallback: T, onCorrupt?: CorruptHandler): T {
   if (!existsSync(file)) return fallback;
   try {
@@ -22,7 +16,7 @@ export function readJson<T>(file: string, fallback: T, onCorrupt?: CorruptHandle
       try {
         copyFileSync(file, backup);
       } catch {
-        // Backup failed too; still return fallback and notify via onCorrupt.
+
       }
     }
     onCorrupt?.(file, backup, err);
@@ -54,7 +48,6 @@ export function dataDir(root?: string): string {
   return root ?? path.join(noaHome(), 'data');
 }
 
-/** Keep only safe characters to stop openids escaping directory paths. */
 export function safeSegment(value: string): string {
   return value.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 96);
 }

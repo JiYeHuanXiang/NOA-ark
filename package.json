@@ -1,14 +1,16 @@
 {
   "name": "noa-ark",
-  "version": "0.1.0",
+  "version": "0.1.9",
   "private": true,
   "description": "NOA Ark — QQ official bot platform to OneBot v11 adapter",
   "license": "AGPL-3.0-or-later",
   "type": "module",
   "main": "./dist/cli.js",
   "exports": {
-    ".": "./dist/cli.js",
+    ".": "./dist/dsh/plugin.js",
+    "./cli": "./dist/cli.js",
     "./dsh": "./dist/dsh/plugin.js",
+    "./client": "./client.js",
     "./locale/*.json": "./locale/*.json",
     "./icon": "./icon.svg",
     "./dsh/locale/*.json": "./locale/*.json",
@@ -20,7 +22,10 @@
   "files": [
     "dist",
     "bin",
+    "client.js",
     "cordis.patch.yml",
+    "docs/PLUGIN.md",
+    "docs/PLUGIN.zh.md",
     "locale",
     "icon.svg"
   ],
@@ -38,6 +43,14 @@
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-plugin-manager"
+      ]
     }
   },
   "icon": "./icon.svg",

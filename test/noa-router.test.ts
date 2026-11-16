@@ -323,7 +323,7 @@ describe('NoaActionRouter', () => {
     expect(service.generateUrlLink).toHaveBeenCalledWith('abc');
   });
 
-  it('rejects P7 actions when their extension is disabled', async () => {
+  it('rejects extension actions when their extension is disabled', async () => {
     const { router } = makeRouter(noaConf());
     for (const action of [
       'noa_get_menu',

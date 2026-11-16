@@ -24,7 +24,7 @@ function makeRouter() {
     idMode: 'mapped',
     mapper,
     selfOpenid: 'BOT_OPENID',
-    selfNickname: 'Arona',
+    selfNickname: 'noa-ark',
   });
   return { router, mapper, cache, sender };
 }
@@ -48,7 +48,7 @@ describe('MilkyActionRouter', () => {
     const r = await router.dispatch('get_message', { message_seq: Number(pseudo) });
     expect(r.status).toBe('ok');
     expect((r.data as { message: { message_seq: number } }).message.message_seq).toBe(Number(pseudo));
-    // 二次映射会给伪号本身分配一个新伪号；这里确认没有发生。
+
     expect(mapper.rawMsgOf(String(Number(pseudo) + 1))).toBeNull();
   });
 

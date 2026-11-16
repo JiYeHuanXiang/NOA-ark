@@ -62,7 +62,7 @@ function makeRouter(
       get: (openid) => (openid === 'GROUP_A' ? { openid: 'GROUP_A', alias: '测试群' } : undefined),
     },
     selfOpenid: 'BOT_OPENID',
-    selfNickname: 'Arona',
+    selfNickname: 'noa-ark',
     logger: { warn: () => undefined },
     ...extraDeps,
   });
@@ -284,7 +284,7 @@ describe('OneBotActionRouter', () => {
       message: [{ type: 'noa_markdown', data: { content: '**x**' } }],
     });
     expect(r.retcode).toBe(1400);
-    expect(r.message).toContain('文档');
+    expect(r.message).toContain('未启用');
   });
 
   it('routes set_group_whole_ban through the official whole-group mute path', async () => {
@@ -397,7 +397,7 @@ describe('OneBotActionRouter', () => {
       group_id: groupId,
       user_id: Number(mapper.selfPseudo('BOT_OPENID')),
     });
-    expect(self.data).toMatchObject({ nickname: 'Arona' });
+    expect(self.data).toMatchObject({ nickname: 'noa-ark' });
   });
 
   it('kicks a member through batch remove and maps reject_add_request to blacklist', async () => {

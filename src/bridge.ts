@@ -1,8 +1,3 @@
-/**
- * Bridge — 把官方网关事件 fan-out 到 OneBot v11 / Milky 两端，
- * 并为两端的发送动作提供统一实现（被动窗口 + 主动配额 + 官方 REST）。
- */
-
 import path from 'node:path';
 import { readJson, writeJsonAtomic, safeSegment } from './store/json-store.js';
 import type { NoaConfig, DshChatConf } from './config.js';
@@ -13,8 +8,6 @@ import { Quota } from './core/quota.js';
 import { MediaCache } from './core/media-cache.js';
 import {
   onebotToMilkySegments,
-  segmentsToCQ,
-  type AnyOneBotSegment,
   type MilkySegment,
   type OutboundPart,
 } from './core/segments.js';
@@ -45,8 +38,6 @@ import { interactionToNoaEvent } from './noa/events.js';
 import { JoinStrategyStore } from './noa/join-policy.js';
 import { NoaActionRouter, type NoaAiChat } from './noa/router.js';
 import { NoaExtensionService } from './noa/service.js';
-
-// —— 群目录 ——————————————————————————————
 
 interface GroupEntry {
   openid: string;
@@ -122,8 +113,6 @@ export class GroupDirectory {
   }
 }
 
-// —— 近期消息缓存 ——————————————————————————————
-
 export class RecentMessageCache implements MessageCacheLike {
   private readonly map = new Map<string, CachedMessage>();
   constructor(
@@ -152,21 +141,10 @@ export class RecentMessageCache implements MessageCacheLike {
   }
 }
 
-// —— 重复投递去重 ——————————————————————————————
-
-/** 消息去重 TTL：官方可能因重试/重连重复推送同一 msg_id。 */
 export const MESSAGE_DEDUPE_TTL_MS = 5 * 60_000;
 
-/** 仅反向 WS 模式下的心跳间隔（正向服务器的 30s 心跳已内置）。 */
 const REVERSE_HEARTBEAT_MS = 30_000;
 
-/**
- * 按官方原始 msg_id 做短期去重。
- *
- * 同一 msg_id 在 TTL 内重复到达时返回 false，桥接层据此跳过；
- * 重复命中不会续期（TTL 从首次到达起算）。TTL 为惰性判定：过期条目
- * 在下次 add 该 id 时按新消息处理；容量溢出时按 FIFO 删除最早插入项。
- */
 export class RecentIdSet {
   private readonly map = new Map<string, number>();
 
@@ -176,7 +154,6 @@ export class RecentIdSet {
     private readonly now: () => number = () => Date.now(),
   ) {}
 
-  /** 首次出现返回 true；TTL 内重复返回 false；空 id 不参与去重。 */
   add(id: string): boolean {
     const key = String(id);
     if (key === '') return true;
@@ -184,8 +161,6 @@ export class RecentIdSet {
     const seenAt = this.map.get(key);
     if (seenAt !== undefined && now - seenAt <= this.ttlMs) return false;
 
-    // 重新插入以维持插入顺序（Map 的 set 不会移动既有键）；容量溢出时按 FIFO 删除最早插入项。
-    // TTL 为惰性判定；去重命中直接返回 false，不刷新时间戳，避免重复推送无限续期。
     if (seenAt !== undefined) this.map.delete(key);
     this.map.set(key, now);
     while (this.map.size > this.capacity) {
@@ -197,11 +172,9 @@ export class RecentIdSet {
   }
 }
 
-// —— 发送实现 ——————————————————————————————
-
 class BridgeSender implements MessageSender {
   private readonly lastPassive = new Map<string, string>();
-  /** event_id 被动回复的 msg_seq（按事件 id 递增，不进入 msg_id 窗口）。 */
+
   private readonly eventSeq = new Map<string, number>();
 
   constructor(
@@ -260,10 +233,6 @@ class BridgeSender implements MessageSender {
     return { messageId: result.parts[0]?.messageId ?? '', passive: result.passive };
   }
 
-  /**
-   * 领取一次发送名额：优先被动窗口（msg_id + 递增 msg_seq），否则按配置转主动配额。
-   * 发送失败不记账；主动消息在发送成功后再调用 recordProactive。
-   */
   reserve(
     scope: OfficialScope,
     targetOpenid: string,
@@ -281,15 +250,10 @@ class BridgeSender implements MessageSender {
     return { passive: false };
   }
 
-  /** 主动消息发送成功后记账（平台判定优先于本地估算）。 */
   recordProactive(scope: OfficialScope, targetOpenid: string): void {
     this.deps.quota.record(scope, targetOpenid, this.deps.now());
   }
 
-  /**
-   * event_id 被动回复：官方按事件 id 记账，不校验 msg_id 窗口。
-   * 同一事件多次回复时 msg_seq 递增；本地只做序号维护，配额以平台判定为准。
-   */
   reserveForEvent(eventId: string): { eventId: string; msgSeq: number } {
     const next = (this.eventSeq.get(eventId) ?? 0) + 1;
     this.eventSeq.set(eventId, next);
@@ -301,10 +265,6 @@ class BridgeSender implements MessageSender {
     return { eventId, msgSeq: next };
   }
 
-  /**
-   * 按顺序发送分片：先上传富媒体（失败不消耗回复次数），再逐条领取被动槽。
-   * 文本 / markdown / 图文卡片 / 富媒体各占一条官方消息，因此混合内容会拆成多条发送。
-   */
   private async sendParts(
     scope: OfficialScope,
     targetOpenid: string,
@@ -446,22 +406,18 @@ function toGroupMemberSnapshot(member: OfficialGroupMember): GroupMemberSnapshot
   };
 }
 
-/** OneBot 富媒体段 → 官方 file_type：1 图片 / 2 视频 / 3 语音。 */
 const MEDIA_FILE_TYPE: Record<'image' | 'record' | 'video', 1 | 2 | 3> = {
   image: 1,
   video: 2,
   record: 3,
 };
 
-/** 从 URL / 本地路径提取文件名，供官方富媒体上传使用。 */
 function fileNameOf(file: string): string | undefined {
   if (file.startsWith('base64://')) return undefined;
   const clean = file.replace(/^file:\/\//, '').split(/[?#]/)[0] ?? '';
   const base = clean.split(/[\\/]/).pop() ?? '';
   return base === '' ? undefined : base;
 }
-
-// —— 聚合入口 ——————————————————————————————
 
 export interface BridgeOptions {
   config: NoaConfig;
@@ -472,9 +428,9 @@ export interface BridgeOptions {
   mapper: IdMapper;
   rest: Rest;
   gateway: GatewayHandle;
-  /** dsh 插件注入的 AI 对话能力；独立进程模式不传。 */
+
   ai?: NoaAiChat;
-  /** dsh 专属 AI 配置的实时读取器；缺省用启动时快照。 */
+
   dshChat?: () => DshChatConf;
   now?: () => number;
 }
@@ -491,9 +447,8 @@ export async function startBridge(options: BridgeOptions): Promise<BridgeHandle>
   const now = options.now ?? (() => Date.now());
   const idMode = config.idMode;
 
-  // 机器人自身 openid / 昵称：/users/@me 有则用之，否则 openid 退回 AppID、昵称退回 Arona。
   let selfOpenid = '';
-  let selfNickname = 'Arona';
+  let selfNickname = 'noa-ark';
   try {
     const info = await rest.getBotInfo();
     selfOpenid = readString(info.id, info.openid, info.user_openid, info.user_id);
@@ -642,7 +597,6 @@ export async function startBridge(options: BridgeOptions): Promise<BridgeHandle>
     }
   }
 
-  // 仅反向 WS 模式下没有正向服务器的 30s 心跳，这里补齐 meta_event heartbeat。
   const reverseHeartbeat = onebot === undefined && reverse !== undefined
     ? setInterval(() => {
       reverse?.broadcast(buildHeartbeatEvent(selfIdValue(), REVERSE_HEARTBEAT_MS, now));
@@ -701,7 +655,7 @@ export async function startBridge(options: BridgeOptions): Promise<BridgeHandle>
     );
 
     if (onebotEvent === null) {
-      // 无 v11 对应的官方事件：只尝试投递 Milky（成员/请求类在下方 mapMilkyEvent 处理）。
+
       emitMilky(eventType, data);
       return;
     }
@@ -743,12 +697,6 @@ export async function startBridge(options: BridgeOptions): Promise<BridgeHandle>
     });
   }
 
-  /**
-   * INTERACTION_CREATE → noa_interaction（仅 noa.ext.interaction 启用时投递）。
-   *
-   * type 11/12 默认先 ACK code=0：官方要求 3 秒内回应，否则客户端持续 loading。
-   * ACK 失败只告警，不阻塞事件投递。
-   */
   function handleInteraction(data: Record<string, unknown>): void {
     if (!config.noa.ext.interaction) {
       logger.debug?.('[bridge] 收到 INTERACTION_CREATE，但 noa.ext.interaction 未启用，已忽略');
@@ -800,8 +748,6 @@ export async function startBridge(options: BridgeOptions): Promise<BridgeHandle>
     },
   };
 }
-
-// —— Milky 事件构造 ——————————————————————————————
 
 function timeOf(data: Record<string, unknown>, now: () => number): number {
   const raw = readString(data.timestamp, data.time);
@@ -952,12 +898,6 @@ function readString(...values: unknown[]): string {
   return '';
 }
 
-/**
- * 官方消息事件里的 REFIDX（message_scene.ext 中 `msg_idx=REFIDX_...`）。
- *
- * 引用回复的 message_reference.message_id 必须用它；message.id（ROBOT1.0_...）
- * 不能替代。缺失时返回 undefined，引用退化为普通被动回复。
- */
 function extractRefIdx(data: Record<string, unknown>): string | undefined {
   const scene = data.message_scene;
   if (!isRecord(scene)) return undefined;
@@ -975,5 +915,3 @@ function extractRefIdx(data: Record<string, unknown>): string | undefined {
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
-
-void segmentsToCQ;

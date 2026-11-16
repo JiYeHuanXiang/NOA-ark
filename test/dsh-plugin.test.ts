@@ -98,6 +98,24 @@ describe('normalizePluginConfig', () => {
     expect(warnings.some((message) => message.includes('isolation'))).toBe(true);
   });
 
+  it('exposes takeover isolation in the settings schema without dropping other takeover keys', () => {
+    const parsed = unwrapVolatile(Config({
+      takeover: {
+        appId: '123456',
+        autoAckInteraction: true,
+        isolation: 'always',
+        retryDelayMs: 5000,
+      },
+    })) as { takeover?: Record<string, unknown> };
+
+    expect(parsed.takeover).toEqual({
+      appId: '123456',
+      autoAckInteraction: true,
+      isolation: 'always',
+      retryDelayMs: 5000,
+    });
+  });
+
   it('defaults to both WS mode and warns on an invalid mode', () => {
     expect(normalizePluginConfig(undefined, () => undefined).config.onebot.mode).toBe('both');
 

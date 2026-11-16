@@ -30,10 +30,9 @@ describe('Milky server', () => {
     const server = await startMilkyServer({
       conf: { enable: true, port: 0, accessToken: 'mt' },
       logger: quietLogger,
-      dispatch: async (api, params) => {
-        if (api === 'get_login_info') return { status: 'ok', retcode: 0, data: { uin: 42, nickname: 'Arona' } };
+      dispatch: async (api) => {
+        if (api === 'get_login_info') return { status: 'ok', retcode: 0, data: { uin: 42, nickname: 'noa-ark' } };
         if (api === 'send_group_message') return { status: 'ok', retcode: 0, data: { message_seq: 7 } };
-        void params;
         return { status: 'failed', retcode: -404, data: {}, message: 'API 不存在' };
       },
     });
@@ -116,7 +115,6 @@ describe('Milky server', () => {
       expect(boom.status).toBe(500);
       expect(((await boom.json()) as { retcode: number }).retcode).toBe(-500);
 
-      // 前两次失败后进程仍可继续处理请求。
       const alive = await fetch(`${server.url}/api/x`, { method: 'POST', headers, body: '{}' });
       expect(alive.status).toBe(200);
       expect(((await alive.json()) as { data: { calls: number } }).data.calls).toBe(2);

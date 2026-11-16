@@ -1,25 +1,11 @@
-/**
- * Rest — QQ 官方开放平台 v2 REST 封装（noa-ark 自研，替代对官方 SDK HTTP 面的依赖）。
- *
- * 能力对齐 文档 §1.2：
- *   - getAppAccessToken（appId + clientSecret）→ access_token，缓存 / 401 自动刷新
- *   - v2 群 / 单聊消息发送（msg_type 0 文本 / 7 富媒体；引用回复 message_reference）
- *   - 富媒体：URL 直传 + ≤5MB 二进制直传 + >5MB 自动分片上传，返回 file_info（含 TTL）
- *   - 群管理：单成员 / 全员禁言、入群审批、群基本信息（需平台白名单）
- *   - 撤回等轻接口
- *
- * 统一域名 https://api.bot.qq.com；沙箱 / 代理可通过 baseUrl 覆盖。
- * 所有方法抛 RestApiError（携带 bizCode 供适配器转译为 OneBot / Milky 响应）。
- */
-
 import type { OfficialScope } from '../types.js';
-// MD5/SHA1 仅用于官方上传接口要求的文件校验字段（非安全用途），不能替换为其他算法。
+
 import { createHash } from 'node:crypto';
 import { lookup } from 'node:dns/promises';
 import { isIP } from 'node:net';
 
 const DEFAULT_BASE_URL = 'https://api.bot.qq.com';
-/** 官方 token 有效期较长；这里保守取 5 分钟提前刷新，避免临界过期。 */
+
 const DEFAULT_TOKEN_TTL_MS = 5 * 60 * 1000;
 
 export class RestApiError extends Error {
@@ -41,7 +27,6 @@ export class RestApiError extends Error {
   }
 }
 
-/** access_token 缓存：提前 TTL 刷新，避免临界过期。 */
 export class TokenCache {
   private accessToken = '';
   private expiresAt = 0;
@@ -78,7 +63,7 @@ export interface RestOptions {
   tokenBaseUrl?: string;
   timeoutMs?: number;
   logger?: { debug(message: string): void; warn(message: string): void };
-  /** 测试注入：替换全局 fetch。 */
+
   fetchImpl?: typeof fetch;
   now?: () => number;
 }
@@ -106,12 +91,11 @@ interface SendTextPayload {
   message_reference?: { message_id: string };
 }
 
-/** 官方 markdown 字段：自定义 content 与模板 custom_template_id+params 二选一。 */
 export interface MarkdownPayload {
   content?: string;
   custom_template_id?: string;
   params?: unknown[];
-  /** 是否强制校验 markdown 内图片资源（官方字段）。 */
+
   force_verify_image_resource?: boolean;
 }
 
@@ -122,20 +106,19 @@ interface SendResponse {
 }
 
 export interface SendTextOptions {
-  /** 被动回复：携带消息 id 与序号；省略则为主动消息。 */
+
   msgId?: string;
-  /** 被动回复事件 id（INTERACTION_CREATE / GROUP_ADD_ROBOT 等），与 msgId 二选一。 */
+
   eventId?: string;
   msgSeq?: number;
-  /** 引用回复：被引用消息的 REFIDX（非机器人消息取 message_scene.ext 的 msg_idx）。 */
+
   refIdx?: string;
-  /** 内嵌键盘（keyboard 短形式 {id} 或长形式 {content:{rows}}）。 */
+
   keyboard?: Record<string, unknown>;
-  /** 互动召回（仅单聊；不校验 msg_id/event_id 有效期）。 */
+
   isWakeup?: boolean;
 }
 
-/** 官方群基本信息（/v2/groups/{group_openid}/info）。 */
 export interface OfficialGroupInfo {
   groupOpenid: string;
   groupName: string;
@@ -144,17 +127,16 @@ export interface OfficialGroupInfo {
 }
 
 export interface UploadOptions {
-  fileType: 1 | 2 | 3 | 4; // 1 图片 2 视频 3 语音 4 文件
+  fileType: 1 | 2 | 3 | 4;
   fileName?: string;
-  /** 富媒体总发送内容（可选文本说明）。 */
+
   content?: string;
 }
 
-/** 官方群成员（2026-09-03 白名单接口）。 */
 export interface OfficialGroupMember {
   memberOpenid: string;
   username: string;
-  /** member / admin / owner */
+
   role: string;
   bot: boolean;
   joinedAt: string;
@@ -162,11 +144,11 @@ export interface OfficialGroupMember {
 }
 
 export interface StreamFrameOptions {
-  /** 首帧省略；后续帧携带首帧响应 id。 */
+
   streamMsgId?: string;
-  /** 从 0 开始严格递增。 */
+
   index: number;
-  /** 1 生成中 / 10 结束。 */
+
   inputState: 1 | 10;
   contentType: 'text' | 'markdown';
   inputMode: 'append' | 'replace';
@@ -174,7 +156,7 @@ export interface StreamFrameOptions {
   msgId?: string;
   eventId?: string;
   msgSeq?: number;
-  /** 互动召回：不校验 msg_id/event_id 有效期。 */
+
   isWakeup?: boolean;
 }
 
@@ -184,7 +166,6 @@ export interface StreamFrameResponse {
   refIdx?: string;
 }
 
-/** 入群申请（join_request_list）。 */
 export interface OfficialJoinRequest {
   joinRequestId: string;
   riskTips: string;
@@ -198,7 +179,6 @@ export interface OfficialJoinRequest {
   verifyInfo: Record<string, unknown>;
 }
 
-/** 群禁言状态（restrict_chat_setting GET）。 */
 export interface OfficialMuteState {
   globalRule: Record<string, unknown>;
   members: Array<{
@@ -209,7 +189,6 @@ export interface OfficialMuteState {
   }>;
 }
 
-/** 群黑名单用户（member_blacklist GET）。 */
 export interface OfficialBlacklistUser {
   unionOpenid?: string;
   memberOpenid: string;
@@ -218,7 +197,6 @@ export interface OfficialBlacklistUser {
   bot: boolean;
 }
 
-/** 素材管理 complete 结果。 */
 export interface OfficialMediaImage {
   imageId: string;
   url: string;
@@ -226,14 +204,12 @@ export interface OfficialMediaImage {
   previewUrl?: string;
 }
 
-/** 分片上传预上传响应。 */
 interface UploadPrepareResponse {
   upload_id?: string;
   block_size?: string | number;
   parts?: Array<{ index?: number; presigned_url?: string; block_size?: string | number }>;
   upload_config?: { concurrency?: number; retry_timeout?: number; retry_delay?: number };
 }
-
 
 export class Rest {
   private readonly appId: string;
@@ -255,7 +231,6 @@ export class Rest {
     this.fetchImpl = options.fetchImpl ?? fetch;
   }
 
-  /** 统一请求入口：自动携带 token，401 时刷新后重试一次。 */
   private async request<T>(
     method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE',
     apiPath: string,
@@ -291,7 +266,7 @@ export class Rest {
     try {
       payload = await response.json();
     } catch {
-      // 非 JSON 响应按空对象处理
+
     }
 
     const record = (payload ?? {}) as {
@@ -301,11 +276,10 @@ export class Rest {
       trace_id?: string;
       id?: string;
     };
-    // 官方 v2 错误体使用 err_code，token 接口使用 code；两者都可能是数字字符串。
+
     const bizCode = numericCode(record.err_code) ?? numericCode(record.code);
     const bizMessage = typeof record.message === 'string' ? record.message : undefined;
 
-    // 部分平台错误以 HTTP 200 返回，只有同时检查响应体错误码才能避免误判成功。
     if (!response.ok || (bizCode !== undefined && bizCode !== 0)) {
       throw new RestApiError(
         bizMessage ?? (response.ok ? `平台返回错误码 ${bizCode ?? '未知'}` : `HTTP ${response.status}`),
@@ -321,7 +295,6 @@ export class Rest {
     return payload as T;
   }
 
-  /** 供网关复用同一 access_token 缓存。 */
   async tokenForGateway(): Promise<string> {
     return this.ensureToken();
   }
@@ -371,7 +344,6 @@ export class Rest {
     return payload.access_token;
   }
 
-  /** 发送文本或富媒体消息；msgId 省略时为主动消息。 */
   async sendText(
     target: { scope: OfficialScope; targetId: string },
     content: string,
@@ -383,7 +355,6 @@ export class Rest {
     return this.request<SendResponse>('POST', `/v2/${pathPrefix}/${encodeURIComponent(target.targetId)}/messages`, payload);
   }
 
-  /** 发送富媒体消息（msg_type=7）；fileInfo 来自 uploadMedia。 */
   async sendRichMedia(
     target: { scope: OfficialScope; targetId: string },
     fileInfo: string,
@@ -395,13 +366,12 @@ export class Rest {
       msg_type: 7,
       media: { file_info: fileInfo },
     };
-    // 官方 msg_type=7 示例不带 content；空串省略，避免 22006「消息类型与内容不匹配」。
+
     if (content !== '') payload.content = content;
     applySendOptions(payload, options);
     return this.request<SendResponse>('POST', `/v2/${pathPrefix}/${encodeURIComponent(target.targetId)}/messages`, payload);
   }
 
-  /** 发送 markdown 消息（msg_type=2），可附带 keyboard；content / 模板二选一。 */
   async sendMarkdown(
     target: { scope: OfficialScope; targetId: string },
     markdown: MarkdownPayload,
@@ -413,7 +383,6 @@ export class Rest {
     return this.request<SendResponse>('POST', `/v2/${pathPrefix}/${encodeURIComponent(target.targetId)}/messages`, payload);
   }
 
-  /** 发送图文卡片（msg_type=8，type=tuwen）。 */
   async sendCard(
     target: { scope: OfficialScope; targetId: string },
     card: { type: string; content: Record<string, unknown> },
@@ -425,7 +394,6 @@ export class Rest {
     return this.request<SendResponse>('POST', `/v2/${pathPrefix}/${encodeURIComponent(target.targetId)}/messages`, payload);
   }
 
-  /** 单聊「正在输入」（msg_type=6）；群聊平台不支持。 */
   async sendTyping(
     userOpenid: string,
     seconds: number,
@@ -439,7 +407,6 @@ export class Rest {
     return this.request<SendResponse>('POST', `/v2/users/${encodeURIComponent(userOpenid)}/messages`, payload);
   }
 
-  /** 单聊互动召回（is_wakeup=true）；不携带被动参数。 */
   async sendWakeup(userOpenid: string, content: string): Promise<SendResponse> {
     return this.request<SendResponse>(
       'POST',
@@ -448,7 +415,6 @@ export class Rest {
     );
   }
 
-  /** 流式单聊消息（首帧 index=0；后续帧携带 stream_msg_id）。 */
   async sendStreamFrame(userOpenid: string, options: StreamFrameOptions): Promise<StreamFrameResponse> {
     const payload: Record<string, unknown> = {
       input_mode: options.inputMode,
@@ -480,7 +446,6 @@ export class Rest {
     };
   }
 
-  /** 回应互动事件（INTERACTION_CREATE）；同一 id 只能回应一次。 */
   async ackInteraction(interactionId: string, code: number): Promise<void> {
     await this.request<unknown>(
       'PUT',
@@ -489,22 +454,18 @@ export class Rest {
     );
   }
 
-  /** 修改全局自定义菜单（仅 C2C）。 */
   async setMenu(menu: Record<string, unknown>): Promise<{ version?: number }> {
     return this.request<{ version?: number }>('PUT', '/v2/menu', { menu });
   }
 
-  /** 查询全局自定义菜单。 */
   async getMenu(): Promise<{ version?: number; menu?: Record<string, unknown> }> {
     return this.request<{ version?: number; menu?: Record<string, unknown> }>('GET', '/v2/menu');
   }
 
-  /** 创建指令面板；返回 {panel_id}。 */
   async createPanel(panel: Record<string, unknown>): Promise<Record<string, unknown>> {
     return this.request<Record<string, unknown>>('POST', '/v2/panels', panel);
   }
 
-  /** 查询指令面板列表；scope 为官方必填（c2c / group）。 */
   async listPanels(
     scope: 'c2c' | 'group',
     cursor?: string,
@@ -516,12 +477,10 @@ export class Rest {
     return this.request<Record<string, unknown>>('GET', `/v2/panels?${query.toString()}`);
   }
 
-  /** 查询指令面板详情。 */
   async getPanel(panelId: string): Promise<Record<string, unknown>> {
     return this.request<Record<string, unknown>>('GET', `/v2/panels/${encodeURIComponent(panelId)}`);
   }
 
-  /** 修改指令面板（覆盖 items/remark，不影响关联对象）。 */
   async updatePanel(panelId: string, panel: Record<string, unknown>): Promise<{ version?: number }> {
     return this.request<{ version?: number }>(
       'PUT',
@@ -530,12 +489,10 @@ export class Rest {
     );
   }
 
-  /** 删除指令面板。 */
   async deletePanel(panelId: string): Promise<void> {
     await this.request<unknown>('DELETE', `/v2/panels/${encodeURIComponent(panelId)}`);
   }
 
-  /** 修改指令面板关联对象（c2c 用 user_openids，group 用 group_openids）。 */
   async updatePanelTarget(
     panelId: string,
     op: 'add' | 'del',
@@ -551,12 +508,10 @@ export class Rest {
     );
   }
 
-  /** 创建入群自动审批策略。 */
   async createJoinApprovalStrategy(body: Record<string, unknown>): Promise<Record<string, unknown>> {
     return this.request<Record<string, unknown>>('POST', '/v2/groups/join_approval_strategy', body);
   }
 
-  /** 修改入群自动审批策略。 */
   async updateJoinApprovalStrategy(
     strategyId: string,
     body: Record<string, unknown>,
@@ -568,7 +523,6 @@ export class Rest {
     );
   }
 
-  /** 增删策略白名单 QQ 号。 */
   async updateJoinApprovalWhitelist(
     strategyId: string,
     op: 'add' | 'del',
@@ -581,7 +535,6 @@ export class Rest {
     );
   }
 
-  /** 对关联群执行全量扫描。 */
   async executeJoinApprovalStrategy(strategyId: string): Promise<Record<string, unknown>> {
     return this.request<Record<string, unknown>>(
       'POST',
@@ -590,7 +543,6 @@ export class Rest {
     );
   }
 
-  /** 查询入群自动审批策略列表。 */
   async listJoinApprovalStrategies(
     cursor?: string,
     limit?: number,
@@ -611,7 +563,6 @@ export class Rest {
     };
   }
 
-  /** 删除入群自动审批策略。 */
   async deleteJoinApprovalStrategy(strategyId: string): Promise<void> {
     await this.request<unknown>(
       'DELETE',
@@ -619,7 +570,6 @@ export class Rest {
     );
   }
 
-  /** 拉取入群申请列表（cursor 分页，limit ≤50）。 */
   async listJoinRequests(
     groupOpenid: string,
     cursor?: string,
@@ -639,7 +589,6 @@ export class Rest {
     };
   }
 
-  /** 审批入群申请（新端点 approval_join_request）。 */
   async approveJoinRequest(
     groupOpenid: string,
     memberOpenid: string,
@@ -665,7 +614,6 @@ export class Rest {
     );
   }
 
-  /** 查询群禁言状态（全员规则 + 成员级列表）。 */
   async getMuteState(groupOpenid: string): Promise<OfficialMuteState> {
     const resp = await this.request<Record<string, unknown>>(
       'GET',
@@ -683,7 +631,6 @@ export class Rest {
     };
   }
 
-  /** 批量设置群成员禁言（单次 ≤20，最长 30 天）。 */
   async setMemberMutes(
     groupOpenid: string,
     members: ReadonlyArray<{ op: 'add' | 'update' | 'del'; memberOpenid: string; muteExpireAt?: string }>,
@@ -701,7 +648,6 @@ export class Rest {
     );
   }
 
-  /** 查询群黑名单（cursor 分页，limit ≤100）。 */
   async listMemberBlacklist(
     groupOpenid: string,
     cursor?: string,
@@ -729,7 +675,6 @@ export class Rest {
     };
   }
 
-  /** 群黑名单操作（add 仅对不在群中的用户生效；单次 ≤20）。 */
   async updateMemberBlacklist(
     groupOpenid: string,
     op: 'add' | 'del',
@@ -747,7 +692,6 @@ export class Rest {
     };
   }
 
-  /** 机器人群内状态（白名单）。 */
   async getGroupBotState(groupOpenid: string): Promise<Record<string, unknown>> {
     return this.request<Record<string, unknown>>(
       'GET',
@@ -755,7 +699,6 @@ export class Rest {
     );
   }
 
-  /** 获取群成员列表（白名单，30 条/页）。 */
   async listGroupMembers(
     groupOpenid: string,
     cursor?: string,
@@ -771,7 +714,6 @@ export class Rest {
     };
   }
 
-  /** 获取单个群成员信息（白名单）。 */
   async getGroupMember(groupOpenid: string, memberOpenid: string): Promise<OfficialGroupMember> {
     const resp = await this.request<Record<string, unknown>>(
       'GET',
@@ -780,7 +722,6 @@ export class Rest {
     return toGroupMember(resp);
   }
 
-  /** 批量移除群成员（单次最多 20 个，可选择同时拉黑；白名单）。 */
   async batchRemoveGroupMembers(
     groupOpenid: string,
     memberOpenids: readonly string[],
@@ -805,7 +746,6 @@ export class Rest {
     };
   }
 
-  /** 撤回消息（群 / 单聊通用；官方仅支持 2 分钟内的自身消息）。 */
   async recallMessage(
     target: { scope: OfficialScope; targetId: string; msgId: string },
   ): Promise<void> {
@@ -816,10 +756,6 @@ export class Rest {
     );
   }
 
-  /**
-   * 上传富媒体：URL 直传（平台转存）或本地 / base64 / Buffer 直传（≤5MB）。
-   * 返回 file_info（含 ttl）。群/单聊上传结果不互通，端点按目标作用域选择。
-   */
   async uploadMedia(
     target: { scope: OfficialScope; targetId: string },
     fileData: string | Buffer,
@@ -829,7 +765,6 @@ export class Rest {
     const apiPath = `/v2/${pathPrefix}/${encodeURIComponent(target.targetId)}/files`;
     const fileType = (options?.fileType ?? guessFileType(options?.fileName)) as 1 | 2 | 3 | 4;
 
-    // URL 直传：交给平台下载转存。
     if (typeof fileData === 'string' && /^https?:\/\//.test(fileData)) {
       const resp = await this.request<{ file_info?: string; ttl?: number }>('POST', apiPath, {
         file_type: fileType,
@@ -841,7 +776,6 @@ export class Rest {
       return { fileInfo: resp.file_info, ttl: resp.ttl };
     }
 
-    // 本地 / base64 / Buffer → 二进制直传（≤5MB）或自动分片上传（>5MB）。
     const buffer = typeof fileData === 'string'
       ? (fileData.startsWith('base64://')
         ? Buffer.from(fileData.slice('base64://'.length), 'base64')
@@ -862,10 +796,6 @@ export class Rest {
     return { fileInfo: resp.file_info, ttl: resp.ttl };
   }
 
-  /**
-   * 分片上传：upload_prepare → 逐片预签名 PUT → upload_part_finish → files {upload_id}。
-   * 分片参数由服务端 upload_config 下发；40093001 可重试，40093002 是日配额超限、不重试。
-   */
   private async uploadMediaChunked(
     target: { scope: OfficialScope; targetId: string },
     buffer: Buffer,
@@ -934,7 +864,6 @@ export class Rest {
     return { fileInfo: resp.file_info, ttl: resp.ttl };
   }
 
-  /** 群禁言（duration 秒，0 取消）；memberOpenid 省略时为全员禁言。 */
   async setGroupBan(groupOpenid: string, muteSeconds: number, memberOpenid?: string): Promise<void> {
     const memberPath = memberOpenid === undefined ? '' : `/members/${encodeURIComponent(memberOpenid)}`;
     await this.request<unknown>(
@@ -944,12 +873,6 @@ export class Rest {
     );
   }
 
-  // —— 素材管理（markdown 图片，2026-10 文档口径）——
-
-  /**
-   * 上传 markdown 素材图片：prepare → 预签名 PUT（不带平台鉴权头）→ complete。
-   * 单图 ≤10MB，png/jpeg/gif/webp；返回 qqbot-media:// 引用与 image_id。
-   */
   async uploadMediaImage(
     fileData: string | Buffer,
     options?: { fileName?: string; contentType?: string },
@@ -1007,13 +930,11 @@ export class Rest {
     };
   }
 
-  /** 查询有效素材图片（cursor 分页）。 */
   async listMediaImages(cursor?: string): Promise<Record<string, unknown>> {
     const suffix = cursor === undefined || cursor === '' ? '' : `?cursor=${encodeURIComponent(cursor)}`;
     return this.request<Record<string, unknown>>('GET', `/v2/media-images${suffix}`);
   }
 
-  /** 删除素材图片（释放 100 张配额）。 */
   async deleteMediaImage(imageId: string): Promise<void> {
     await this.request<unknown>(
       'DELETE',
@@ -1021,7 +942,6 @@ export class Rest {
     );
   }
 
-  /** 生成机器人分享链接（callback_data ≤32 字符）。 */
   async generateUrlLink(callbackData?: string): Promise<{ url: string }> {
     const body = callbackData === undefined || callbackData === '' ? {} : { callback_data: callbackData };
     const resp = await this.request<{ data?: { url?: string } }>('POST', '/v2/generate_url_link', body);
@@ -1030,7 +950,6 @@ export class Rest {
     return { url };
   }
 
-  /** 群基本信息（需平台白名单权限；无权限时抛 RestApiError）。 */
   async getGroupInfo(groupOpenid: string): Promise<OfficialGroupInfo> {
     const resp = await this.request<Record<string, unknown>>(
       'GET',
@@ -1044,12 +963,10 @@ export class Rest {
     };
   }
 
-  /** botinfo：机器人基础信息。 */
   async getBotInfo(): Promise<Record<string, unknown>> {
     return this.request<Record<string, unknown>>('GET', '/users/@me');
   }
 
-  /** 入群审批（旧端点，保留历史 flag 兼容）。 */
   async setGroupAddRequest(
     params: { eventSeq: string; groupId: string; approve: boolean },
   ): Promise<void> {
@@ -1063,7 +980,6 @@ export class Rest {
     );
   }
 
-  /** 预签名 URL 直传（COS）：不带平台鉴权头，可指定 Content-Type。 */
   private async putPresigned(
     presignedUrl: string,
     data: Buffer,
@@ -1083,11 +999,10 @@ export class Rest {
     if (!response.ok) {
       throw new RestApiError(`预签名上传失败：HTTP ${response.status}`, { httpStatus: response.status });
     }
-    // COS 返回的 ETag 即文件 MD5（去掉引号）；部分对象存储不暴露该头时回退本地 md5。
+
     return (response.headers.get('etag') ?? '').replace(/"/g, '').trim().toLowerCase();
   }
 
-  /** 下载公网文件（素材上传用）；限制协议 / 目标地址并边读边限制 10MB。 */
   private async downloadFile(url: string): Promise<Buffer> {
     await assertPublicHttpUrl(url);
     let response: Response;
@@ -1128,9 +1043,8 @@ export class Rest {
   }
 }
 
-/** 官方二进制直传上限：5MB；更大的文件走分片上传。 */
 const BINARY_UPLOAD_LIMIT = 5 * 1024 * 1024;
-/** 素材图片上限：10MB。 */
+
 const MEDIA_IMAGE_LIMIT = 10 * 1024 * 1024;
 const MEDIA_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
 
@@ -1199,14 +1113,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-/** 官方错误码可能是数字或数字字符串。 */
 function numericCode(value: unknown): number | undefined {
   if (typeof value === 'number' && Number.isFinite(value)) return value;
   if (typeof value === 'string' && /^-?\d+$/.test(value.trim())) return Number(value.trim());
   return undefined;
 }
 
-/** 素材图片下载前的 SSRF 防护：只允许 http/https，且目标不能落在内网地址。 */
 async function assertPublicHttpUrl(raw: string): Promise<void> {
   let parsed: URL;
   try {
@@ -1248,8 +1160,8 @@ function isPrivateAddress(address: string): boolean {
     if (lower === '::' || lower === '::1') return true;
     const first = parseInt(lower.split(':')[0] ?? '', 16);
     if (!Number.isFinite(first)) return true;
-    if ((first & 0xfe00) === 0xfc00) return true; // fc00::/7 唯一本地地址
-    if ((first & 0xffc0) === 0xfe80) return true; // fe80::/10 链路本地
+    if ((first & 0xfe00) === 0xfc00) return true;
+    if ((first & 0xffc0) === 0xfe80) return true;
     return false;
   }
   return true;
@@ -1265,12 +1177,11 @@ function isPrivateIpv4(address: string): boolean {
   if (a === 169 && b === 254) return true;
   if (a === 172 && b >= 16 && b <= 31) return true;
   if (a === 192 && b === 168) return true;
-  if (a === 100 && b >= 64 && b <= 127) return true; // CGNAT
-  if (a >= 224) return true; // 组播 / 保留段
+  if (a === 100 && b >= 64 && b <= 127) return true;
+  if (a >= 224) return true;
   return false;
 }
 
-/** 被动参数 / 引用 / 键盘 / 召回 统一写入请求体。 */
 function applySendOptions(payload: SendTextPayload, options?: SendTextOptions): void {
   if (options === undefined) return;
   if (options.msgId !== undefined && options.msgId !== '') {

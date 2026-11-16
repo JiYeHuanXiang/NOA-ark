@@ -1,33 +1,20 @@
-/**
- * noa/1 事件：官方 INTERACTION_CREATE → notice/noa_interaction（文档 §4.1）。
- *
- * 保持 post_type="notice"，旧程序不认识的 notice_type 可安全忽略。
- * 仅在 noa.ext.interaction 启用时由桥接层调用。
- */
-
 import type { IdMapper } from '../core/idmap.js';
 
 export interface NoaInteractionContext {
   mapper: IdMapper;
   idMode: 'mapped' | 'passthrough';
   selfOpenid: string;
-  /** 事件里是否附带官方原始 d。 */
+
   interactionRaw: boolean;
   now: () => number;
 }
 
-/** chat_type → scene（官方 0=guild / 1=group / 2=c2c）。 */
 const SCENE_BY_CHAT_TYPE: Record<number, string> = {
   0: 'guild',
   1: 'group',
   2: 'c2c',
 };
 
-/**
- * 官方互动事件 → noa_interaction。
- *
- * 返回 null 表示缺少可用的 interaction_id（无法 ACK，也没有投递价值）。
- */
 export function interactionToNoaEvent(
   data: Record<string, unknown>,
   ctx: NoaInteractionContext,

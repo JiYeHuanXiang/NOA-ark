@@ -1,11 +1,3 @@
-/**
- * Milky v1.3 Action 路由。
- *
- * 复用 OneBot 层的 MessageSender 抽象；响应结构：
- *   { status: 'ok' | 'failed', retcode, data, message? }
- * retcode 约定：0 成功 / -400 参数错误 / -403 未登录 / -404 API 不存在。
- */
-
 import {
   onebotToMilkySegments,
   milkyToOnebotSegments,
@@ -32,7 +24,7 @@ export interface MilkyDeps {
 
 const IMPL_INFO = {
   impl_name: 'noa-ark',
-  impl_version: '0.1.0',
+  impl_version: '0.1.9',
   qq_protocol_version: 'v2',
   qq_protocol_type: 'windows',
   milky_version: '1.3',
@@ -48,9 +40,9 @@ export class MilkyActionRouter {
       case 'send_group_message':
         return this.sendMessage('group', params);
       case 'recall_private_message':
-        return this.recall('friend', params);
+        return this.recall(params);
       case 'recall_group_message':
-        return this.recall('group', params);
+        return this.recall(params);
       case 'get_message':
         return this.getMessage(params);
       case 'get_history_messages':
@@ -149,7 +141,7 @@ export class MilkyActionRouter {
     }
   }
 
-  private async recall(scene: 'friend' | 'group', params: Record<string, unknown>): Promise<MilkyResponse> {
+  private async recall(params: Record<string, unknown>): Promise<MilkyResponse> {
     const sender = this.requireSender();
     if (sender === null) return this.failed(-403, '机器人尚未连接');
     const seq = params.message_seq;
@@ -213,7 +205,6 @@ export class MilkyActionRouter {
     return this.deps.idMode === 'passthrough' ? rawMsgId : Number(this.deps.mapper.pseudoMsgOf(rawMsgId));
   }
 
-  /** 缓存键已经是暴露后的 message_seq，不能再走 pseudoMsgOf 二次映射。 */
   private seqValue(value: unknown): number | string {
     const raw = String(value);
     return this.deps.idMode === 'passthrough' ? raw : Number(raw);

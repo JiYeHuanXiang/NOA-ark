@@ -126,7 +126,7 @@ describe('dsh takeover runtime', () => {
     });
     runtime = new TakeoverRuntime(config, takeoverConf, logger);
     runtime.onBot({ appId: 'APP_ID', appSecret: 'APP_SECRET' });
-    // auto 且未配置反向 WS：启动窗口内没有 OneBot 端能抢先回复，dsh 继续处理
+
     expect(runtime.shouldSuppressDshMessage({ eventType: 'C2C_MESSAGE_CREATE', data: {} })).toBe(false);
 
     const url = await waitFor(() => runtime!.onebotUrl);
@@ -170,7 +170,6 @@ describe('dsh takeover runtime', () => {
     expect(sendCall?.body.msg_id).toBe('RAW_1');
     expect(sendCall?.body.msg_seq).toBe(1);
 
-    // 额外 QQBot 实例：事件不转发、不触发隔离
     runtime.onBot({ appId: 'OTHER', appSecret: 'OTHER_SECRET' });
     runtime.onEvent({
       eventType: 'C2C_MESSAGE_CREATE',

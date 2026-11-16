@@ -1,17 +1,3 @@
-/**
- * 官方 qqbot v2 内容/附件 ↔ OneBot v11 / Milky v1.3 消息段的双向转换。
- *
- * 入站：官方 content（含 `<qqbot-at-user id="..."/>`）+ attachments → 段数组/CQ 串。
- * 出站：OneBot v11 段数组（或 CQ 串）/ Milky 段 → 官方文本与富媒体上传请求。
- *
- * 能力边界（文档 §3.4 / §4）：
- *   - 官方无原生 json/xml/markdown 接收，无合并转发（node/forward）；
- *   - noa_markdown / noa_keyboard / noa_card / noa_ark / noa_embed 是 noa 私有扩展段，
- *     仅在 OneBot 侧 opt-in 使用，不参与跨协议转换；
- *   - 未知段类型在 CQ 层面原样保留为 `{type, data}`，跨协议转换则明确失败。
- */
-
-/** 官方 v2 消息附件；兼容 snake_case 与 camelCase 字段。 */
 export interface OfficialAttachment {
   content_type?: string;
   contentType?: string;
@@ -21,13 +7,12 @@ export interface OfficialAttachment {
   width?: number;
   height?: number;
   duration?: number;
-  /** 语音消息转换后的 WAV 地址（SILK 不可直接播放时优先使用）。 */
+
   voice_wav_url?: string;
-  /** 语音消息 ASR 参考文本。 */
+
   asr_refer_text?: string;
 }
 
-/** 官方结构化卡片（ark_data）字段。 */
 export interface OfficialArkData {
   prompt?: string;
   ark_type?: string;
@@ -35,7 +20,6 @@ export interface OfficialArkData {
   fields?: Record<string, unknown>;
 }
 
-/** 官方消息元素（msg_elements）；可递归嵌套。 */
 export interface OfficialMsgElement {
   msg_idx?: string;
   message_type?: number;
@@ -104,19 +88,16 @@ export interface OneBotVideoSegment {
   data: OneBotMediaData;
 }
 
-/** 非标准 @全体；部分 OneBot 实现用 at(qq=all) 表示。 */
 export interface OneBotMentionAllSegment {
   type: 'mention_all';
   data: Record<string, never>;
 }
 
-/** 官方 markdown 模板参数（custom_template_id + params 二选一于 content）。 */
 export interface NoaMarkdownParams {
   key: string;
   values: string[];
 }
 
-/** noa 扩展：官方 msg_type=2 markdown（opt-in）。 */
 export interface OneBotNoaMarkdownSegment {
   type: 'noa_markdown';
   data: {
@@ -127,10 +108,8 @@ export interface OneBotNoaMarkdownSegment {
   };
 }
 
-/** 官方 keyboard 按钮预览样式：0 灰色线框 / 1 蓝色线框 / 3 白底红字 / 4 蓝底白字。 */
 export type NoaKeyboardStyle = 0 | 1 | 3 | 4;
 
-/** 官方 keyboard 动作：0 跳转 / 1 回调 / 2 指令。 */
 export type NoaKeyboardActionType = 0 | 1 | 2;
 
 export interface NoaKeyboardButton {
@@ -157,18 +136,15 @@ export interface NoaKeyboardRow {
   buttons: NoaKeyboardButton[];
 }
 
-/** 官方 keyboard：短形式 {id} 与长形式 {content:{rows}} 互斥。 */
 export type NoaKeyboardPayload =
   | { id: string }
   | { content: { rows: NoaKeyboardRow[] } };
 
-/** noa 扩展：官方 keyboard 按钮模板（opt-in，必须与 text/noa_markdown 同现）。 */
 export interface OneBotNoaKeyboardSegment {
   type: 'noa_keyboard';
   data: NoaKeyboardPayload;
 }
 
-/** 官方唯一可在群聊/单聊发送的卡片：msg_type=8 图文卡片。 */
 export interface NoaCardPayload {
   type: 'tuwen';
   content: {
@@ -180,25 +156,21 @@ export interface NoaCardPayload {
   };
 }
 
-/** noa 扩展：官方 msg_type=8 图文卡片（opt-in）。 */
 export interface OneBotNoaCardSegment {
   type: 'noa_card';
   data: NoaCardPayload;
 }
 
-/** noa 扩展：官方 msg_type=3 ark 卡片（opt-in）。 */
 export interface OneBotNoaArkSegment {
   type: 'noa_ark';
   data: { json: unknown };
 }
 
-/** noa 扩展：官方 msg_type=4 embed 卡片（opt-in）。 */
 export interface OneBotNoaEmbedSegment {
   type: 'noa_embed';
   data: { embed: unknown };
 }
 
-/** OneBot v11 已知段 + noa 扩展段（判别联合）。 */
 export type OneBotSegment =
   | OneBotTextSegment
   | OneBotFaceSegment
@@ -214,13 +186,11 @@ export type OneBotSegment =
   | OneBotNoaArkSegment
   | OneBotNoaEmbedSegment;
 
-/** CQ 解析中遇到的未知/第三方段：保留原始 type 与字符串化 data。 */
 export interface RawSegment {
   type: string;
   data: Record<string, unknown>;
 }
 
-/** 已知段或未知段。 */
 export type AnyOneBotSegment = OneBotSegment | RawSegment;
 export type AnyMilkySegment = MilkySegment | RawSegment;
 
@@ -250,7 +220,7 @@ export interface MilkyReplySegment {
 }
 
 export interface MilkyMediaData {
-  /** OneBot 侧 file 的对应字段。 */
+
   uri?: string;
   resource_id?: string;
   temp_url?: string;
@@ -277,13 +247,11 @@ export interface MilkyVideoSegment {
   data: MilkyMediaData;
 }
 
-/** Milky 侧存在、但官方平台无法承载的段（file/forward/xml/...）。 */
 export interface MilkyOpaqueSegment {
   type: 'file' | 'forward' | 'market_face' | 'light_app' | 'xml' | 'markdown';
   data: Record<string, unknown>;
 }
 
-/** Milky v1.3 段联合。 */
 export type MilkySegment =
   | MilkyTextSegment
   | MilkyMentionSegment
@@ -295,17 +263,16 @@ export type MilkySegment =
   | MilkyVideoSegment
   | MilkyOpaqueSegment;
 
-/** 跨协议转换结果；失败时 reason 为可直接回给客户端的中文说明。 */
 export type SegmentConversion<T> =
   | { ok: true; segments: T[] }
   | { ok: false; reason: string };
 
 export interface OfficialToSegmentsOptions {
-  /** 事件 attachments；没有则传空数组/省略。 */
+
   attachments?: readonly OfficialAttachment[];
-  /** 无法反查 openid 时用于机器人自身的伪 self_id 兜底。 */
+
   selfPseudo?: string;
-  /** openid → 暴露给协议的 ID（通常是 IdMapper.expose）。 */
+
   resolve: (openid: string) => string;
 }
 
@@ -313,17 +280,8 @@ const AT_TAG =
   /<qqbot-at-user\s+id="([^"]*)"\s*\/?>|<qqbot-at-everyone\s*\/?>|<@!?([^<>\s]+)>/g;
 const RICH_MEDIA_TYPES = new Set(['image', 'record', 'video']);
 
-/** 元素递归深度上限，防御异常嵌套导致栈溢出。 */
 const MAX_ELEMENT_DEPTH = 4;
 
-/**
- * 把官方 content 拆成文本/@ 序列。
- *
- * 兼容两种 @ 标记：
- *   - 旧式 `<qqbot-at-user id="OPENID"/>` / `<qqbot-at-everyone/>`；
- *   - 2026 文档新式 `<@member_openid>` / `<@all>`（`<@!openid>` 也接受）。
- * 相邻标签不会产生空文本段。
- */
 export function parseOfficialContent(content: string): ParsedOfficialPart[] {
   const input = String(content ?? '');
   if (input === '') return [];
@@ -340,7 +298,7 @@ export function parseOfficialContent(content: string): ParsedOfficialPart[] {
     } else if (newOpenid !== undefined) {
       parts.push(newOpenid === 'all' ? { kind: 'at-all' } : { kind: 'at-user', openid: newOpenid });
     } else {
-      // <qqbot-at-everyone/>
+
       parts.push({ kind: 'at-all' });
     }
     cursor = index + match[0].length;
@@ -349,12 +307,6 @@ export function parseOfficialContent(content: string): ParsedOfficialPart[] {
   return parts;
 }
 
-/**
- * 官方 attachments → OneBot 富媒体段。
- *
- * image* → image，video* → video，audio 或 voice → record；
- * 其余类型降级为 `[附件:文件名]` 文本。
- */
 export function attachmentsToSegments(
   attachments: readonly OfficialAttachment[] = [],
 ): OneBotSegment[] {
@@ -379,12 +331,6 @@ export function attachmentsToSegments(
   return segments;
 }
 
-/**
- * 官方结构化卡片 → 可读文本降级。
- *
- * 优先 fields.title / desc / nickname / address，其次 ark_name / prompt；
- * 没有任何可读信息时输出 `[卡片消息]`。
- */
 export function arkDataToText(ark: OfficialArkData | undefined): string {
   if (ark === undefined) return '';
   const fields = isRecord(ark.fields) ? ark.fields : {};
@@ -398,14 +344,6 @@ export function arkDataToText(ark: OfficialArkData | undefined): string {
   return label === '' ? '[卡片消息]' : `[卡片:${label}]`;
 }
 
-/**
- * 官方 msg_elements → OneBot 段。
- *
- * message_type 101/102/103（并行消息/聊天记录/引用消息）在官方事件里
- * 没有独立正文，实际内容在元素的 content / 嵌套 msg_elements 中；
- * message_type=3 的结构化卡片用 ark_data 降级为 `[卡片:标题]`。
- * 递归处理嵌套元素，深度上限 4。
- */
 export function msgElementsToSegments(
   elements: readonly unknown[] = [],
   depth = 0,
@@ -432,11 +370,6 @@ export function msgElementsToSegments(
   return segments;
 }
 
-/**
- * 官方 parts + attachments → OneBot 段数组。
- *
- * 相邻 text 合并；at-user 通过 resolve 转成伪号；附件追加在正文之后。
- */
 export function officialPartsToSegments(
   parts: readonly ParsedOfficialPart[],
   options: OfficialToSegmentsOptions,
@@ -461,12 +394,6 @@ export function officialPartsToSegments(
   return segments;
 }
 
-/**
- * OneBot 段数组 → CQ 串。
- *
- * text 段按 CQ 约定输出为转义后的裸文本，其余段输出 `[CQ:type,key=value]`；
- * 未知段原样序列化，保证 `cqToSegments` 可往返。
- */
 export function segmentsToCQ(segments: readonly AnyOneBotSegment[]): string {
   let cq = '';
   for (const segment of segments) {
@@ -485,11 +412,6 @@ export function segmentsToCQ(segments: readonly AnyOneBotSegment[]): string {
   return cq;
 }
 
-/**
- * CQ 串 → OneBot 段数组。
- *
- * 未知类型保留 `{type, data}`；`[CQ:text,text=...]` 也归并为 text 段。
- */
 export function cqToSegments(cq: string): AnyOneBotSegment[] {
   const input = String(cq ?? '');
   const segments: AnyOneBotSegment[] = [];
@@ -505,7 +427,7 @@ export function cqToSegments(cq: string): AnyOneBotSegment[] {
 
     const close = input.indexOf(']', open + 4);
     if (close === -1) {
-      // 没有闭合方括号：按普通文本处理，避免吞掉后半条消息。
+
       appendText(segments, unescapeCq(input.slice(open)));
       break;
     }
@@ -539,12 +461,6 @@ export function cqToSegments(cq: string): AnyOneBotSegment[] {
   return segments;
 }
 
-/**
- * 段数组 → 纯文本降级。
- *
- * at → `@qq` / `@全体成员`，face → `[表情id]`，
- * image/record/video → `[图片]/[语音]/[视频]`，reply → 空。
- */
 export function segmentsToPlainText(segments: readonly AnyOneBotSegment[]): string {
   let text = '';
   for (const segment of segments) {
@@ -581,12 +497,10 @@ export function segmentsToPlainText(segments: readonly AnyOneBotSegment[]): stri
   return text;
 }
 
-/** 是否含有需要上传/走 msg_type=7 的富媒体段。 */
 export function needsRichMedia(segments: readonly AnyOneBotSegment[]): boolean {
   return segments.some((segment) => RICH_MEDIA_TYPES.has(segment.type));
 }
 
-/** 出站 markdown 载荷：自定义 content 与模板 custom_template_id+params 二选一。 */
 export interface OutboundMarkdown {
   content?: string;
   custom_template_id?: string;
@@ -594,14 +508,12 @@ export interface OutboundMarkdown {
   force_verify_image_resource?: boolean;
 }
 
-/** 出站消息的一个有序分片；官方一条消息只能承载一种内容，故按段拆成多条发送。 */
 export type OutboundPart =
   | { kind: 'text'; text: string; keyboard?: NoaKeyboardPayload }
   | { kind: 'markdown'; markdown: OutboundMarkdown; keyboard?: NoaKeyboardPayload }
   | { kind: 'media'; mediaType: 'image' | 'record' | 'video'; file: string }
   | { kind: 'card'; card: NoaCardPayload };
 
-/** noa/1 已启用的出站能力（关闭时对应段明确失败）。 */
 export interface NoaOutboundCapabilities {
   markdown: boolean;
   keyboard: boolean;
@@ -609,11 +521,11 @@ export interface NoaOutboundCapabilities {
 }
 
 export interface OfficialOutboundOptions {
-  /** 消息场景；群聊与单聊的 @ 能力不同。 */
+
   scope: 'group' | 'c2c';
-  /** noa/1 扩展开关；省略视为全部关闭。 */
+
   noa?: NoaOutboundCapabilities;
-  /** at 段目标（伪号 / 透传 openid）→ 官方 openid；markdown 模式下用于生成 @ 标签。 */
+
   resolveAt?: (qq: string) => string | null;
 }
 
@@ -627,21 +539,9 @@ const MEDIA_TYPE_BY_SEGMENT: Record<string, 'image' | 'record' | 'video'> = {
   video: 'video',
 };
 
-/** 键盘行/列上限（官方超限返回 40034029）。 */
 const MAX_KEYBOARD_ROWS = 5;
 const MAX_KEYBOARD_BUTTONS_PER_ROW = 5;
 
-/**
- * OneBot 段数组 → 官方出站分片（文本 / markdown / 图文卡片 / 单条富媒体）。
- *
- * A 类行为保持不变：text 与 media 按段顺序交错拆条，相邻 text 合并。
- * noa/1 扩展（需 options.noa 显式启用）：
- * - noa_markdown 单独成条（msg_type=2），可与 noa_keyboard 同现；
- * - noa_card 单独成条（msg_type=8）；
- * - noa_keyboard 必须挂在 text 或 noa_markdown 上，富媒体不可挂；
- * - markdown 消息里的 at(qq=用户) 转换为 `<qqbot-at-user id="openid" />`；
- * - noa_ark / noa_embed 群/单聊永久不可发送，返回 retcode=1404。
- */
 export function segmentsToOfficialParts(
   segments: readonly AnyOneBotSegment[],
   options: OfficialOutboundOptions,
@@ -693,7 +593,7 @@ export function segmentsToOfficialParts(
         if (!markdownMode) {
           return {
             ok: false,
-            reason: '官方群聊的 @用户 仅支持 markdown 消息；请在同一消息里使用 noa_markdown 段（文档 §3.1）',
+            reason: '官方群聊的 @用户 仅支持 markdown 消息；请在同一消息里使用 noa_markdown 段',
           };
         }
         const openid = options.resolveAt?.(qq) ?? '';
@@ -730,7 +630,7 @@ export function segmentsToOfficialParts(
       }
       case 'noa_markdown': {
         if (noa?.markdown !== true) {
-          return { ok: false, reason: 'noa 扩展消息段「noa_markdown」未启用（见 文档）' };
+          return { ok: false, reason: 'noa 扩展消息段「noa_markdown」未启用（配置 noa.ext.markdown=true 后启用）' };
         }
         if (markdown !== null) {
           return { ok: false, reason: '同一消息只能有一个 noa_markdown 段' };
@@ -742,7 +642,7 @@ export function segmentsToOfficialParts(
       }
       case 'noa_keyboard': {
         if (noa?.keyboard !== true) {
-          return { ok: false, reason: 'noa 扩展消息段「noa_keyboard」未启用（见 文档）' };
+          return { ok: false, reason: 'noa 扩展消息段「noa_keyboard」未启用（配置 noa.ext.keyboard=true 后启用）' };
         }
         if (keyboard !== null) {
           return { ok: false, reason: '同一消息只能有一个 noa_keyboard 段' };
@@ -754,7 +654,7 @@ export function segmentsToOfficialParts(
       }
       case 'noa_card': {
         if (noa?.card !== true) {
-          return { ok: false, reason: 'noa 扩展消息段「noa_card」未启用（见 文档）' };
+          return { ok: false, reason: 'noa 扩展消息段「noa_card」未启用（配置 noa.ext.card=true 后启用）' };
         }
         if (card !== null) {
           return { ok: false, reason: '同一消息只能有一个 noa_card 段' };
@@ -769,7 +669,7 @@ export function segmentsToOfficialParts(
         return {
           ok: false,
           retcode: 1404,
-          reason: '官方群聊/单聊不支持发送结构化卡片（收 ✅ / 发 ❌）；图文卡片请用 noa_card',
+          reason: '官方群聊/单聊不支持发送结构化卡片（入站可用 / 出站不可用）；图文卡片请用 noa_card',
         };
       default:
         return { ok: false, reason: `消息段「${segment.type}」无法经 QQ 官方平台发送（无对应能力）` };
@@ -1003,12 +903,6 @@ function validateCardPayload(
   };
 }
 
-/**
- * OneBot v11 段 → Milky v1.3 段。
- *
- * 支持 text / at / mention_all / face / reply / image / record / video；
- * 其余（xml/json/markdown/node/forward、noa 扩展等）明确失败。
- */
 export function onebotToMilkySegments(
   segments: readonly AnyOneBotSegment[],
 ): SegmentConversion<MilkySegment> {
@@ -1057,12 +951,6 @@ export function onebotToMilkySegments(
   return { ok: true, segments: converted };
 }
 
-/**
- * Milky v1.3 段 → OneBot v11 段。
- *
- * mention_all 转为 v11 惯例的 at(qq=all)；file/forward/xml/markdown 等
- * 官方承载不了的段明确失败。
- */
 export function milkyToOnebotSegments(
   segments: readonly AnyMilkySegment[],
 ): SegmentConversion<OneBotSegment> {

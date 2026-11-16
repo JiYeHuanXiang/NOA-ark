@@ -1,28 +1,16 @@
-/**
- * IdMapper — openid / 官方 message_id 与稳定伪数值 ID 的双向映射。
- *
- * 计数器从 10^13 起（避开真实 QQ 号区间），持久化到
- * `data/registry/idmap.json`，重启后继续递增；超出容量上限时按 LRU
- * 淘汰条目，但已分配的伪号永不复用，避免旧程序侧 ID 漂移。
- *
- * passthrough 模式不写映射表，直接返回官方原始字符串。
- */
-
 import type { IdMode } from '../config.js';
 import { readJson, writeJsonAtomic } from '../store/json-store.js';
 
-/** 伪号起点：10^13，位于真实 QQ 号（约 10^5..10^11）之外。 */
 export const PSEUDO_BASE = 10_000_000_000_000;
-/** 伪号上界（含）：10^14 - 1。 */
+
 export const PSEUDO_MAX = 99_999_999_999_999;
 
 const SELF_RANGE = PSEUDO_MAX - PSEUDO_BASE + 1;
 const DEFAULT_CAPACITY = 200_000;
 const IDMAP_VERSION = 1;
-/** 新映射合并写入的窗口：避免每条消息同步重写整个文件。 */
+
 const SAVE_DEBOUNCE_MS = 1_000;
 
-/** `data/registry/idmap.json` 的持久化结构。 */
 export interface IdMapFile {
   version: number;
   nextId: number;
@@ -34,9 +22,9 @@ export interface IdMapFile {
 }
 
 export interface IdMapperOptions {
-  /** 映射文件绝对路径，通常为 `<dataDir>/registry/idmap.json`。 */
+
   file: string;
-  /** 每个方向的最大条目数，默认 200,000。 */
+
   capacity?: number;
   logger?: { warn(message: string): void };
 }
@@ -75,11 +63,9 @@ export class IdMapper {
     this.nextId = normalizeNext(raw.nextId, maxOpenidId);
     this.nextMsgId = normalizeNext(raw.nextMsgId, maxMsgId);
 
-    // 读入时已经超过容量（例如调小配置）：立即淘汰并落盘。
     this.evictIfNeeded();
   }
 
-  /** 取得（或分配）openid 对应的稳定伪号。 */
   pseudoOf(openid: string): string {
     const key = String(openid);
     if (key === '') return '';
@@ -100,7 +86,6 @@ export class IdMapper {
     return pseudo;
   }
 
-  /** 取得（或分配）官方消息 id 对应的伪 message_id。 */
   pseudoMsgOf(rawMsgId: string): string {
     const key = String(rawMsgId);
     if (key === '') return '';
@@ -121,24 +106,18 @@ export class IdMapper {
     return pseudo;
   }
 
-  /** 伪号 → openid；未知返回 null。 */
   openidOf(pseudo: string): string | null {
     const key = String(pseudo);
     if (key === '') return null;
     return this.pseudoToOpenid.get(key) ?? null;
   }
 
-  /** 伪 message_id → 官方原始消息 id；未知返回 null。 */
   rawMsgOf(pseudo: string): string | null {
     const key = String(pseudo);
     if (key === '') return null;
     return this.pseudoToMsg.get(key) ?? null;
   }
 
-  /**
-   * 由 AppID 派生稳定伪 self_id（FNV-1a 32 位），
-   * 映射到 [10^13, 10^14-1]，无需持久化。
-   */
   selfPseudo(appId: string): string {
     let hash = 0x811c9dc5;
     const payload = `noa-ark-self:${appId}`;
@@ -149,38 +128,26 @@ export class IdMapper {
     return String(PSEUDO_BASE + (hash % SELF_RANGE));
   }
 
-  /** 按 idMode 暴露 openid（mapped=伪号，passthrough=原串）。 */
   expose(openid: string, mode: IdMode): string {
     if (openid === '') return '';
     return mode === 'passthrough' ? openid : this.pseudoOf(openid);
   }
 
-  /** 按 idMode 暴露官方消息 id（mapped=伪号，passthrough=原串）。 */
   exposeMsg(rawMsgId: string, mode: IdMode): string {
     if (rawMsgId === '') return '';
     return mode === 'passthrough' ? rawMsgId : this.pseudoMsgOf(rawMsgId);
   }
 
-  /**
-   * 解析入站 ID：mapped 模式下优先按伪号反查 openid；
-   * 查不到时视为调用方直接传入了 openid，原样返回。
-   */
   resolveIncoming(pseudoOrOpenid: string, mode: IdMode): string {
     const value = String(pseudoOrOpenid);
     if (value === '' || mode === 'passthrough') return value;
     return this.pseudoToOpenid.get(value) ?? value;
   }
 
-  /**
-   * 按 LRU 淘汰超限条目；返回淘汰条数。
-   *
-   * 只删除映射，不回退 nextId/nextMsgId——伪号一旦分配就不再复用。
-   */
   evictIfNeeded(): number {
     let evicted = 0;
-    evicted += this.evictOldest(this.openidToPseudo, (openid, pseudo) => {
+    evicted += this.evictOldest(this.openidToPseudo, (_openid, pseudo) => {
       this.pseudoToOpenid.delete(pseudo);
-      void openid;
     });
     evicted += this.evictOldest(this.msgToPseudo, (_raw, pseudo) => {
       this.pseudoToMsg.delete(pseudo);
@@ -192,7 +159,6 @@ export class IdMapper {
     return evicted;
   }
 
-  /** 立即落盘（仅 dirty 时真正写入）；进程退出前由调用方显式调用。 */
   flush(): void {
     if (this.saveTimer !== undefined) {
       clearTimeout(this.saveTimer);
@@ -202,7 +168,7 @@ export class IdMapper {
   }
 
   private touchOpenid(openid: string, pseudo: string): void {
-    // Map 的插入顺序即 LRU 顺序：删除后重插 = 移到队尾。
+
     this.openidToPseudo.delete(openid);
     this.openidToPseudo.set(openid, pseudo);
   }
@@ -229,7 +195,6 @@ export class IdMapper {
     return evicted;
   }
 
-  /** 合并窗口内的多次变更，只触发一次整文件写入。 */
   private scheduleSave(): void {
     if (this.saveTimer !== undefined) return;
     this.saveTimer = setTimeout(() => {
@@ -254,7 +219,6 @@ export class IdMapper {
     this.dirty = false;
   }
 
-  /** 读取 byOpenid/byPseudo，返回已用到的最大伪号。 */
   private loadOpenids(raw: Partial<IdMapFile>): number {
     let max = 0;
     const record = isRecord(raw.byOpenid) ? raw.byOpenid : {};
@@ -266,7 +230,6 @@ export class IdMapper {
       max = Math.max(max, Number(pseudo));
     }
 
-    // byPseudo 是派生数据；容忍只有 byPseudo 的旧文件。
     const reverse = isRecord(raw.byPseudo) ? raw.byPseudo : {};
     for (const [pseudo, openid] of Object.entries(reverse)) {
       if (typeof openid !== 'string' || !isNumericId(pseudo)) continue;
@@ -278,7 +241,6 @@ export class IdMapper {
     return max;
   }
 
-  /** 读取 msgBySrc/msgByPseudo，返回已用到的最大伪号。 */
   private loadMessages(raw: Partial<IdMapFile>): number {
     let max = 0;
     const record = isRecord(raw.msgBySrc) ? raw.msgBySrc : {};

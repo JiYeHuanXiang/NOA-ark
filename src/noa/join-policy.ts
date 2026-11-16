@@ -1,10 +1,3 @@
-/**
- * 入群自动审批策略的 group_openid → strategy_id 持久缓存。
- *
- * 官方创建策略接口不返回“该群已有策略”的查询入口，重复创建会占用机器人 20 个策略额度；
- * 适配器本地记住每个群最近一次创建的 strategy_id，后续调用走 PATCH 更新。
- */
-
 import { readJson, writeJsonAtomic } from '../store/json-store.js';
 
 interface JoinPolicyFile {
@@ -39,7 +32,6 @@ export class JoinStrategyStore {
     if (this.map.delete(groupOpenid)) this.save();
   }
 
-  /** 删除策略后清理本地点位，避免后续 PATCH 打到已删除的 strategy_id。 */
   deleteByStrategyId(strategyId: string): void {
     let changed = false;
     for (const [groupOpenid, stored] of this.map) {

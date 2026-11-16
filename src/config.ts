@@ -1,23 +1,16 @@
-/**
- * Config model for noa-ark.
- *
- * Credentials (appId/appSecret) are provided via environment variables
- * only — they never persist to config.json.
- */
-
 import { existsSync, readFileSync } from 'node:fs';
 import { configPath } from './store/json-store.js';
 
 export type IdMode = 'mapped' | 'passthrough';
 export type PassiveOverflow = 'fail' | 'proactive';
-/** OneBot WS 工作模式：正向（服务端）/ 反向（客户端）/ 两者同时。 */
+
 export type WsMode = 'forward' | 'reverse' | 'both';
 
 export interface OneBotConf {
   enable: boolean;
   mode: WsMode;
   accessToken: string;
-  /** WS 监听端口（正向 WebSocket；HTTP API 已移除）。 */
+
   wsPort: number;
   wsPath: string;
   reverseUrls: string[];
@@ -29,10 +22,6 @@ export interface MilkyConf {
   accessToken: string;
 }
 
-/**
- * noa/1 扩展能力开关（文档 §2.4）。
- * 全部默认关闭；未启用时对应段/动作按「能力不存在」明确失败。
- */
 export interface NoaExtConf {
   markdown: boolean;
   keyboard: boolean;
@@ -43,61 +32,51 @@ export interface NoaExtConf {
   joinPolicy: boolean;
   stream: boolean;
   wakeup: boolean;
-  /** 高权限群管理（禁言查询/批量、黑名单、bot_state）；默认 false。 */
+
   groupAdmin: boolean;
-  /** markdown 素材管理（media-images 上传/查询/删除）；默认 false。 */
+
   material: boolean;
-  /** 生成分享链接（generate_url_link）；默认 false。 */
+
   share: boolean;
-  /** P7 补充通知事件（好友删除 / 消息接收开关 / 订阅授权状态）；默认 false。 */
+
   events: boolean;
 }
 
 export interface NoaConf {
   ext: NoaExtConf;
-  /** 收到 INTERACTION_CREATE（type 11/12）时先自动 ACK code=0。 */
+
   autoAckInteraction: boolean;
-  /** 事件里是否附带官方原始 d。 */
+
   interactionRaw: boolean;
 }
 
-/**
- * dsh 专属 AI 对话（OneBot 动作 `noa_dsh_chat`）。
- *
- * 只有作为 dsh 插件运行时才有 AI 可调用；独立进程模式下动作明确失败。
- */
 export interface DshChatConf {
-  /** 允许外部 OneBot 进程调用 dsh 内的 AI；默认 false。 */
+
   enable: boolean;
-  /**
-   * true（默认）：仅对话回复。AI 发起的任何工具调用都会被拒绝
-   * （不读文件、不写文件、不执行命令）。false：把完整 agent 工具集交给 AI。
-   */
+
   restrictTools: boolean;
-  /** 单次调用超时（毫秒）。 */
+
   timeoutMs: number;
-  /** 对话 agent 闲置回收时间（毫秒）；0 表示每次调用结束后立即回收。 */
+
   sessionIdleMs: number;
-  /** agent 工作目录；空字符串表示使用 dsh 进程当前目录。 */
+
   cwd: string;
 }
 
 export interface NoaConfig {
   appId: string;
   appSecret: string;
-  /** REST/WSS base override; empty = official default. */
+
   baseUrl: string;
   tokenBaseUrl: string;
   dataDir: string;
   idMode: IdMode;
   passiveOverflow: PassiveOverflow;
-  /**
-   * 网关 intents 覆盖值；0 = 自动（1<<25 | 1<<24，平台拒绝时回退 1<<25）。
-   */
+
   intents: number;
-  /** Per-peer daily proactive cap (local estimate; platform verdict wins). */
+
   dailyLimitPerPeer: number;
-  /** Per-peer proactive messages per minute. */
+
   perMinuteLimit: number;
   botQpsLimit: number;
   botQpmLimit: number;
@@ -171,7 +150,6 @@ function isObject(value: unknown): value is Record<string, unknown> {
 
 const DANGEROUS_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 
-/** Deep-merge config; arrays replace wholesale; dangerous keys ignored. */
 export function mergeConfig<T>(base: T, patch: unknown): T {
   if (!isObject(patch)) return base;
   const out: Record<string, unknown> = { ...(base as Record<string, unknown>) };
@@ -189,7 +167,6 @@ export function mergeConfig<T>(base: T, patch: unknown): T {
   return out as T;
 }
 
-/** Only warns; invalid values fall back in normalize(). */
 export function validateConfig(config: NoaConfig): string[] {
   const warnings: string[] = [];
   if (!['mapped', 'passthrough'].includes(config.idMode)) {
@@ -317,7 +294,6 @@ function normalize(config: NoaConfig): NoaConfig {
   return config;
 }
 
-/** Parse an arbitrary JSON object into a full config; doesn't touch files. */
 export function parseConfig(raw: unknown, onWarn?: (message: string) => void): NoaConfig {
   const merged = mergeConfig(DEFAULT_CONFIG, raw);
   for (const warning of validateConfig(merged)) onWarn?.(warning);
@@ -337,7 +313,6 @@ export function loadConfig(file?: string, onWarn?: (message: string) => void): N
   return parseConfig(raw, onWarn);
 }
 
-/** Credentials are env-only; the config file never carries them. */
 export function resolveCredentials(config: NoaConfig): { appId: string; appSecret: string } | null {
   const appId = process.env.NOA_APP_ID ?? process.env.QQBOT_APPID ?? config.appId;
   const appSecret = process.env.NOA_APP_SECRET ?? process.env.QQBOT_SECRET ?? config.appSecret;
@@ -350,7 +325,6 @@ export function maskedAppId(appId: string): string {
   return `${appId.slice(0, 4)}***${appId.slice(-2)}`;
 }
 
-/** 已启用的 noa/1 能力名（供 get_version_info 的 noa_ext 字段）。 */
 export function enabledNoaExt(ext: NoaExtConf): string[] {
   return (Object.keys(ext) as Array<keyof NoaExtConf>).filter((key) => ext[key]);
 }

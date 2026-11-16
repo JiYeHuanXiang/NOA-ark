@@ -133,7 +133,7 @@ describe('dsh takeover', () => {
       suppress = true;
       const second = inbound('GROUP_AT_MESSAGE_CREATE', 'm2');
       await bot.handleInboundMessage(second);
-      // OneBot 仍收到；dsh-qqbot 的 handleInboundMessage 完全没有进入
+
       expect(bot.handled).toHaveLength(1);
       expect(onMessage).toHaveBeenCalledTimes(1);
       expect(events).toHaveLength(2);

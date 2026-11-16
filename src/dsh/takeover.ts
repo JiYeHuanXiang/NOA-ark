@@ -1,61 +1,35 @@
-/**
- * dsh 接管层 — 在 dsh 进程内旁路 dsh-qqbot 的 QQBot 实例。
- *
- * 设计：
- *   - dsh-qqbot 自己 new @tencent-connect/qqbot-nodejs 的 QQBot 并连 QQ 网关；
- *   - 我们不另开第二条 WebSocket（同一机器人多连接会互相顶号），而是在进程内
- *     旁路 QQBot 实例：
- *       · 包装 `handleInboundMessage(raw)`：在中间件/斜杠命令之前拿到原始
- *         `{rawEventType, raw}`，转交给 noa；隔离生效时直接不进入 dsh-qqbot
- *         的中间件链（避免斜杠命令、typing 等先回复）；
- *       · 包装 `emit`：旁路 `rawEvent`（非消息事件）、`interaction`
- *         （INTERACTION_CREATE）、`ready` / `disconnected`；
- *   - 凭据从 QQBot 实例的 getCredentials() 读取，不落盘、不重复配置。
- *
- * 注意：qqbot-nodejs 1.0.5 的消息**不会**走 rawEvent，只走
- * handleInboundMessage → emit('message')；因此必须拦在最前面。
- *
- * 该模块不 import 任何 dsh 包，只做结构化类型匹配，便于单测。
- */
-
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { Logger } from '../types.js';
 
-/** 官方原始事件（与 official/gateway.ts 的 OfficialEventEnvelope 对齐）。 */
 export interface TakeoverRawEvent {
   eventType: string;
   data: Record<string, unknown>;
-  /** 来源 QQBot 的 AppID（多实例时用于过滤，不代表官方事件字段）。 */
+
   botAppId?: string;
 }
 
-/** 从运行中的 QQBot 实例读到的凭据。 */
 export interface CapturedBot {
   appId: string;
   appSecret: string;
 }
 
-/** 插件侧接管回调。 */
 export interface TakeoverSink {
-  /** 首次/每次看到 QQBot 实例时调用；实现方按 appId 去重。 */
+
   onBot(bot: CapturedBot): void;
-  /** 每条官方原始事件。 */
+
   onEvent(event: TakeoverRawEvent): void;
-  /**
-   * 隔离判定：返回 true 时，本条入站 message 不再交给 dsh-qqbot 的 agent，
-   * 避免 dsh 与外接 OneBot 程序同时回复。
-   */
+
   shouldSuppressDshMessage?(event: TakeoverRawEvent): boolean;
-  /** QQ 网关断开（仍可能自动重连）。 */
+
   onDisconnect?(reason: string): void;
 }
 
 export interface TakeoverHandle {
   readonly installed: boolean;
-  /** 移除本 sink；最后一个 sink 移除时恢复原型。 */
+
   uninstall(): void;
 }
 
@@ -65,9 +39,9 @@ export interface QqbotClassLike {
 
 export interface ResolvedQqbot {
   QQBot: new (options: Record<string, unknown>) => unknown;
-  /** qqbot-nodejs 的 dist/index.js 路径（日志用）。 */
+
   sdkPath: string;
-  /** dsh-qqbot 包目录（日志用）。 */
+
   packageDir: string;
 }
 
@@ -76,12 +50,11 @@ const STATE_KEY = Symbol.for('noa-ark.dsh.takeover.state');
 interface TakeoverState {
   originalEmit: (event: string, ...args: unknown[]) => unknown;
   originalHandleInbound: ((raw: unknown) => unknown) | undefined;
-  /** SDK 是否提供 handleInboundMessage（1.0.5 有）。 */
+
   inboundPatched: boolean;
   sinks: Set<InstalledSink>;
 }
 
-/** 每次 install 一个独立条目：允许两个 handle 共用同一个 sink 而不互相取消。 */
 interface InstalledSink {
   sink: TakeoverSink;
 }
@@ -91,10 +64,6 @@ interface CredentialedBot {
   appId?: unknown;
 }
 
-/**
- * 给 QQBot.prototype 打旁路补丁。可重复调用；只有第一个 sink 安装时
- * 才真正替换原型方法，最后一个 sink 卸载时恢复。
- */
 export function installTakeover(
   qqbot: QqbotClassLike,
   sink: TakeoverSink,
@@ -167,18 +136,11 @@ export function installTakeover(
 }
 
 export interface DshQqbotActivation {
-  /** 当前 profile 的 dsh.profile.bundles 是否包含 dsh-qqbot。 */
+
   bundled: boolean;
   profileDir: string;
 }
 
-/**
- * 静态判断当前 profile 是否启用了 dsh-qqbot 组合包。
- *
- * dsh 的组合树只应用 dsh.profile.bundles 里列出的 bundle；依赖装了但不在
- * bundles 里时，dsh-qqbot 的 im-qqbot 行不会进入运行时。接管层据此给出
- * 明确提示，而不是静默空闲。
- */
 export function detectDshQqbotActivation(): DshQqbotActivation | null {
   for (const profileDir of candidateProfileDirs()) {
     const packageFile = path.join(profileDir, 'package.json');
@@ -200,7 +162,6 @@ export function detectDshQqbotActivation(): DshQqbotActivation | null {
   return null;
 }
 
-/** 从 dsh 已安装的 dsh-qqbot 解析出同一份 qqbot-nodejs（保证原型是同一个对象）。 */
 export async function loadDshQqbot(logger: Logger): Promise<ResolvedQqbot | null> {
   const profileDirs = candidateProfileDirs();
   for (const profileDir of profileDirs) {
@@ -219,7 +180,7 @@ export async function loadDshQqbot(logger: Logger): Promise<ResolvedQqbot | null
       if (hoisted !== null) return hoisted;
     }
   }
-  // 兜底：dsh-qqbot 不在 profile 顶层时，直接从 profile 解析 SDK。
+
   for (const profileDir of profileDirs) {
     for (const modulesDir of moduleDirs(profileDir)) {
       const direct = await tryLoadSdk(
@@ -233,16 +194,11 @@ export async function loadDshQqbot(logger: Logger): Promise<ResolvedQqbot | null
   return null;
 }
 
-/** profile 的两种依赖布局：常规 node_modules 与 dsh 的 dependencies/node_modules。 */
 function moduleDirs(profileDir: string): string[] {
   const dirs = [path.join(profileDir, 'node_modules'), path.join(profileDir, 'dependencies', 'node_modules')];
   return dirs.filter((dir, index) => dirs.indexOf(dir) === index);
 }
 
-/**
- * 直接按包的 main 字段加载，绕开 exports 的 CJS 条件。
- * qqbot-nodejs 是纯 ESM 且 exports 只给 import，createRequire.resolve 会失败。
- */
 async function tryLoadSdk(sdkDir: string, packageDir: string): Promise<ResolvedQqbot | null> {
   const packageFile = path.join(sdkDir, 'package.json');
   if (!existsSync(packageFile)) return null;
@@ -282,15 +238,11 @@ function candidateProfileDirs(): string[] {
       add(path.join(home, 'profiles', name));
     }
   } catch {
-    // profiles 目录不存在时忽略
+
   }
   return dirs;
 }
 
-/**
- * 入站消息旁路：在 dsh-qqbot 的中间件之前处理。
- * 返回 false 表示隔离生效，不进入 dsh-qqbot 的中间件链。
- */
 function dispatchInbound(
   state: TakeoverState,
   bot: unknown,
@@ -319,7 +271,6 @@ function dispatchInbound(
   return !suppress;
 }
 
-/** emit 旁路：非消息事件、互动事件、连接状态。 */
 function dispatchEmit(
   state: TakeoverState,
   bot: unknown,
@@ -349,7 +300,7 @@ function dispatchEmit(
   }
 
   if (event === 'message' && !state.inboundPatched) {
-    // 兼容没有 handleInboundMessage 的 SDK：退回 emit('message') 的 ctx.message。
+
     const message = args[1] ?? (isRecord(args[0]) ? args[0].message : undefined);
     const raw = readInboundEvent(message);
     if (raw === null) return true;
@@ -377,7 +328,7 @@ function dispatchEmit(
       try {
         sink.onDisconnect?.(reason);
       } catch {
-        // 旁路不能影响 dsh-qqbot
+
       }
     }
   }
@@ -422,7 +373,7 @@ function readCredentials(bot: unknown): CapturedBot | null {
       if (appId !== '' && appSecret !== '') return { appId, appSecret };
     }
   } catch {
-    // getCredentials 在异常实例上可能抛错；无凭据就跳过
+
   }
   return null;
 }
@@ -435,11 +386,6 @@ function readRawEvent(value: unknown): TakeoverRawEvent | null {
   return { eventType: ctx.eventType, data: ctx.data as Record<string, unknown> };
 }
 
-/**
- * 从 InboundMessage 还原官方 {t, d}：
- *   rawEventType = 网关事件名（C2C_MESSAGE_CREATE / GROUP_AT_MESSAGE_CREATE / GROUP_MESSAGE_CREATE）
- *   raw          = SDK 透明转发的原始平台事件对象
- */
 function readInboundEvent(value: unknown): TakeoverRawEvent | null {
   if (!isRecord(value)) return null;
   const eventType = typeof value.rawEventType === 'string' ? value.rawEventType : '';

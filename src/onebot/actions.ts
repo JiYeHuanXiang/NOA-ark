@@ -1,14 +1,3 @@
-/**
- * OneBot v11 Action 路由（文档 §3.3 三档口径）。
- *
- * ✅ 直接实现：官方 REST 或适配器本地能力
- * ⚠️ 降级实现：群目录合成 / 本地消息缓存
- * ❌ 明确拒绝：retcode=1404 + 原因（官方平台无此能力）
- *
- * 发送类动作不直接依赖 Rest，而依赖注入的 MessageSender ——
- * 被动窗口（msg_id + msg_seq）与主动配额由桥接层统一处理。
- */
-
 import type { IdMapper } from '../core/idmap.js';
 import type { MediaCache } from '../core/media-cache.js';
 import {
@@ -32,16 +21,15 @@ export interface OneBotResponse {
   echo?: unknown;
 }
 
-/** 单条官方消息的发送结果；refIdx 供后续引用回复使用。 */
 export interface SentMessagePart {
   messageId: string;
   refIdx?: string;
 }
 
 export interface SendPartsOptions {
-  /** 被引用消息的 REFIDX；只附加到本次发送的第一条消息。 */
+
   refIdx?: string;
-  /** 被动回复事件 id（与 msg_id 二选一；官方按事件类型校验场景）。 */
+
   eventId?: string;
 }
 
@@ -55,21 +43,19 @@ export interface GroupInfoSnapshot {
   memberCount?: number;
 }
 
-/** 官方群成员（2026-09-03 白名单接口）。 */
 export interface GroupMemberSnapshot {
   memberOpenid: string;
   username: string;
-  /** member / admin / owner */
+
   role: string;
   bot?: boolean;
   joinedAt?: string;
 }
 
-/** 发送/管理能力抽象：由桥接层实现（官方 REST + 被动窗口 + 配额）。 */
 export interface MessageSender {
   sendGroupText(groupOpenid: string, text: string): Promise<{ messageId: string; passive: boolean }>;
   sendPrivateText(userOpenid: string, text: string): Promise<{ messageId: string; passive: boolean }>;
-  /** 按顺序发送文本/富媒体分片；每条分片各占一次被动槽。 */
+
   sendGroupParts(
     groupOpenid: string,
     parts: readonly OutboundPart[],
@@ -80,12 +66,12 @@ export interface MessageSender {
     parts: readonly OutboundPart[],
     options?: SendPartsOptions,
   ): Promise<SendPartsResult>;
-  /** 官方群信息；无权限或失败时返回 null（由调用方回退本地目录）。 */
+
   getGroupInfo(groupOpenid: string): Promise<GroupInfoSnapshot | null>;
   recall(scope: OfficialScope, targetOpenid: string, rawMsgId: string): Promise<void>;
   setGroupBan(groupOpenid: string, muteSeconds: number, memberOpenid?: string): Promise<void>;
   approveGroupRequest(groupOpenid: string, requestId: string, approve: boolean): Promise<void>;
-  /** 新审批端点（approval_join_request）：支持拒绝理由与同时拉黑。 */
+
   approveJoinRequest(
     groupOpenid: string,
     memberOpenid: string,
@@ -96,11 +82,11 @@ export interface MessageSender {
       addToMemberBlacklist?: boolean;
     },
   ): Promise<void>;
-  /** 群成员列表（白名单；30 条/页，cursor 为空表示第一页）。 */
+
   listGroupMembers(groupOpenid: string, cursor?: string): Promise<{ members: GroupMemberSnapshot[]; nextCursor: string }>;
-  /** 单个群成员信息（白名单）；平台返回错误时抛错。 */
+
   getGroupMember(groupOpenid: string, memberOpenid: string): Promise<GroupMemberSnapshot>;
-  /** 批量移除群成员（单次最多 20 个；可选同时拉黑）。 */
+
   batchRemoveGroupMembers(
     groupOpenid: string,
     memberOpenids: readonly string[],
@@ -117,7 +103,7 @@ export interface CachedMessage {
   segments: AnyOneBotSegment[];
   rawMessage: string;
   tsMs: number;
-  /** 官方 REFIDX：引用回复时作为 message_reference.message_id。 */
+
   refIdx?: string;
 }
 
@@ -140,15 +126,15 @@ export interface ActionDeps {
   selfOpenid: string;
   selfNickname: string;
   logger: { warn(message: string): void };
-  /** 网关真实在线状态（缺省时退化为 sender 是否存在）。 */
+
   isOnline?: () => boolean;
-  /** get_image / get_record 的本地媒体缓存；未配置时明确失败。 */
+
   mediaCache?: MediaCache | null;
-  /** noa/1 扩展能力开关（缺省视为全部关闭）。 */
+
   noaConf?: NoaConf;
-  /** noa_* 动作路由器；未接入时 noa_* 动作统一 1404。 */
+
   noa?: NoaActionRouter | null;
-  /** 发送成功后向上游投递 message_sent 事件。 */
+
   emitEvent?: (event: unknown) => void;
 }
 
@@ -191,7 +177,6 @@ export const ACTION_NAMES = [
 export class OneBotActionRouter {
   constructor(private readonly deps: ActionDeps) {}
 
-  /** 动作入口；未知动作与非公开动作统一 1404。 */
   async dispatch(action: string, params: Record<string, unknown>, echo?: unknown): Promise<OneBotResponse> {
     const echoValue = echo ?? params?.echo;
     if (action.startsWith('noa_')) {
@@ -203,7 +188,7 @@ export class OneBotActionRouter {
         status: 'failed',
         retcode: RET_UNSUPPORTED,
         data: null,
-        message: `noa 扩展动作 ${action} 未接入（见 文档）`,
+        message: `noa 扩展动作 ${action} 未接入`,
         echo: echoValue,
       };
     }
@@ -234,7 +219,7 @@ export class OneBotActionRouter {
         const noaExt = this.deps.noaConf === undefined ? [] : enabledNoaExt(this.deps.noaConf.ext);
         return this.ok(echoValue, {
           app_name: 'noa-ark',
-          app_version: '0.1.0',
+          app_version: '0.1.9',
           protocol_version: 'v11',
           id_mode: this.deps.idMode,
           noa_ext_version: 'noa/1',
@@ -286,8 +271,6 @@ export class OneBotActionRouter {
     }
   }
 
-  // —— 发送 ——
-
   private async sendMsg(params: Record<string, unknown>, echo: unknown): Promise<OneBotResponse> {
     const type = typeof params.message_type === 'string' ? params.message_type : '';
     if (type === 'group' || (type === '' && params.group_id !== undefined)) {
@@ -315,10 +298,6 @@ export class OneBotActionRouter {
     return this.sendSegments('c2c', userOpenid, params, echo);
   }
 
-  /**
-   * 统一发送：段 → 官方有序分片（文本 / 富媒体），回复段解析为 REFIDX。
-   * 文本与图片混排会拆成多条消息，各自消耗一次被动槽。
-   */
   private async sendSegments(
     scope: OfficialScope,
     targetOpenid: string,
@@ -364,13 +343,6 @@ export class OneBotActionRouter {
     }
   }
 
-  /**
-   * 回复段 → REFIDX。
-   *
-   * 官方 message_reference 只接受 REFIDX：非机器人消息取事件的 msg_idx，
-   * 机器人自己的消息取发送响应的 ext_info.ref_idx；两者都缓存在消息记录里。
-   * 取不到时按普通被动回复发送并回报 warning，不阻塞消息投递。
-   */
   private replyReference(replyId: string): { refIdx: string; warning?: string } {
     if (replyId === '') return { refIdx: '' };
     if (replyId.startsWith('REFIDX_')) return { refIdx: replyId };
@@ -384,7 +356,6 @@ export class OneBotActionRouter {
     return { refIdx: record.refIdx };
   }
 
-  /** 机器人自己发出的消息也写入缓存：供 delete_msg 撤回与后续引用回复使用。 */
   private cacheOutbound(
     scope: OfficialScope,
     peerOpenid: string,
@@ -413,7 +384,6 @@ export class OneBotActionRouter {
     }
   }
 
-  /** 出站分片 → 可缓存的 OneBot 段（message_sent 事件与 get_msg 共用）。 */
   private outboundPartToSegments(part: OutboundPart): AnyOneBotSegment[] {
     switch (part.kind) {
       case 'media':
@@ -435,7 +405,6 @@ export class OneBotActionRouter {
     }
   }
 
-  /** OneBot v11 message_sent：机器人发出的消息也向上游广播。 */
   private emitMessageSent(
     scope: OfficialScope,
     targetOpenid: string,
@@ -468,8 +437,6 @@ export class OneBotActionRouter {
       );
     }
   }
-
-  // —— 撤回 / 消息缓存 ——
 
   private async deleteMsg(params: Record<string, unknown>, echo: unknown): Promise<OneBotResponse> {
     const sender = this.deps.sender;
@@ -505,8 +472,6 @@ export class OneBotActionRouter {
       raw_message: record.rawMessage,
     });
   }
-
-  // —— 信息 ——
 
   private async getGroupInfo(params: Record<string, unknown>, echo: unknown): Promise<OneBotResponse> {
     const groupOpenid = this.resolveGroup(params.group_id);
@@ -569,7 +534,6 @@ export class OneBotActionRouter {
     }
   }
 
-  /** 群成员列表：白名单接口，30 条/页；最多拉 20 页（600 人）并告警截断。 */
   private async getGroupMemberList(params: Record<string, unknown>, echo: unknown): Promise<OneBotResponse> {
     const sender = this.deps.sender;
     if (sender === null) return this.badRequest('机器人尚未连接', echo);
@@ -610,7 +574,6 @@ export class OneBotActionRouter {
     })));
   }
 
-  /** 群成员批量移除（白名单）；reject_add_request → 同时加入群黑名单。 */
   private async setGroupKick(params: Record<string, unknown>, echo: unknown): Promise<OneBotResponse> {
     const sender = this.deps.sender;
     if (sender === null) return this.badRequest('机器人尚未连接', echo);
@@ -636,7 +599,6 @@ export class OneBotActionRouter {
     }
   }
 
-  /** get_image / get_record：把官方附件 URL 落到本地缓存并返回路径。 */
   private async getCachedMedia(
     params: Record<string, unknown>,
     echo: unknown,
@@ -661,8 +623,6 @@ export class OneBotActionRouter {
     }
   }
 
-  // —— 群管理（降级/对齐官方 2026.08）——
-
   private async setGroupBan(params: Record<string, unknown>, echo: unknown): Promise<OneBotResponse> {
     const sender = this.deps.sender;
     if (sender === null) return this.badRequest('机器人尚未连接，无法禁言', echo);
@@ -685,10 +645,6 @@ export class OneBotActionRouter {
     }
   }
 
-  /**
-   * 全员禁言：官方禁言接口省略 member_openid 即全群路径。
-   * OneBot 标准只有 enable；enable=true 固定 24 小时。
-   */
   private async setGroupWholeBan(params: Record<string, unknown>, echo: unknown): Promise<OneBotResponse> {
     const sender = this.deps.sender;
     if (sender === null) return this.badRequest('机器人尚未连接，无法禁言', echo);
@@ -718,7 +674,7 @@ export class OneBotActionRouter {
     const reason = typeof params.reason === 'string' ? params.reason : '';
     try {
       if (parts.length >= 3) {
-        // 新事件/新 flag：group_openid:member_openid:join_request_id（join_request_id 可能含冒号）。
+
         const memberOpenid = parts[1];
         const joinRequestId = parts.slice(2).join(':');
         if (memberOpenid === '' || joinRequestId === '') {
@@ -730,7 +686,7 @@ export class OneBotActionRouter {
           rejectReason: reason,
         });
       } else {
-        // 旧 flag：group_openid:event_seq，保留旧端点兼容；序号不可用时明确失败。
+
         const eventSeq = parts[1];
         if (!/^\d+$/.test(eventSeq) || eventSeq === '0') {
           return this.badRequest('flag 无效（缺少 join_request_id/member_openid 且事件序号不可用，无法审批）', echo);
@@ -742,8 +698,6 @@ export class OneBotActionRouter {
       return this.badRequest(errText(err), echo);
     }
   }
-
-  // —— helpers ——
 
   private ok(echo: unknown, data: unknown): OneBotResponse {
     return { status: 'ok', retcode: RET_OK, data, message: '', echo };
@@ -815,12 +769,10 @@ function errText(err: unknown): string {
   return String(err);
 }
 
-/** 官方 member_role → OneBot role。 */
 function normalizeRole(role: string): 'owner' | 'admin' | 'member' {
   return role === 'owner' || role === 'admin' ? role : 'member';
 }
 
-/** 官方 RFC3339 入群时间 → Unix 秒；缺失或非法返回 0。 */
 function parseRfc3339Seconds(value?: string): number {
   if (value === undefined || value === '') return 0;
   const parsed = Date.parse(value);

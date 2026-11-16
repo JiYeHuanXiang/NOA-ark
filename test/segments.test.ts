@@ -356,7 +356,7 @@ describe('segmentsToOfficialParts · noa/1', () => {
   it('fails noa segments when the extension is disabled and returns 1404 for ark/embed', () => {
     const disabled = segmentsToOfficialParts([{ type: 'noa_card', data: { type: 'tuwen', content: {} } }], { scope: 'group' });
     expect(disabled.ok).toBe(false);
-    if (!disabled.ok) expect(disabled.reason).toContain('文档');
+    if (!disabled.ok) expect(disabled.reason).toContain('未启用');
 
     const ark = segmentsToOfficialParts([{ type: 'noa_ark', data: { json: {} } }], { scope: 'group', noa });
     expect(ark.ok).toBe(false);
@@ -409,6 +409,6 @@ describe('segmentsToOfficialParts', () => {
 
     const noa = segmentsToOfficialParts([{ type: 'noa_markdown', data: { content: 'x' } }], { scope: 'group' });
     expect(noa.ok).toBe(false);
-    if (!noa.ok) expect(noa.reason).toContain('文档');
+    if (!noa.ok) expect(noa.reason).toContain('未启用');
   });
 });

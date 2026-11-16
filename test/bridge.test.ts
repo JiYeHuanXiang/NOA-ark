@@ -56,7 +56,6 @@ function nextJson(ws: WebSocket, predicate?: (data: Record<string, unknown>) => 
 async function setup(mode: 'forward' | 'reverse' | 'both' = 'both'): Promise<Harness> {
   const dir = mkdtempSync(path.join(os.tmpdir(), 'noa-bridge-'));
 
-  // 模拟「旧 OneBot 程序」：一个反向 WS 服务端。
   const wsServer = new WebSocketServer({ host: '127.0.0.1', port: 0 });
   await new Promise<void>((resolve) => wsServer.once('listening', () => resolve()));
   const addr = wsServer.address();
@@ -186,7 +185,6 @@ describe('bridge end-to-end', () => {
   it('fans official events to reverse WS and routes send_group_msg back to official REST with msg_id + msg_seq', async () => {
     const harness = await setup();
 
-    // 等待适配器拨号过来。
     const app = await new Promise<WebSocket>((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error('反向 WS 未连接')), 5000);
       harness.wsServer.once('connection', (ws) => {
@@ -196,11 +194,9 @@ describe('bridge end-to-end', () => {
     });
     cleanups.push(() => app.terminate());
 
-    // 连接后先收到 lifecycle。
     const lifecycle = await nextJson(app);
     expect(lifecycle.meta_event_type).toBe('lifecycle');
 
-    // 注入官方群 @ 消息。
     harness.emit({
       eventType: 'GROUP_AT_MESSAGE_CREATE',
       data: {
@@ -216,7 +212,6 @@ describe('bridge end-to-end', () => {
     expect(messageEvent.message_type).toBe('group');
     expect(String(messageEvent.raw_message)).toContain('hello');
 
-    // 旧程序回发 send_group_msg，应命中官方 REST 且带 msg_id + msg_seq=1。
     app.send(
       JSON.stringify({
         action: 'send_group_msg',
@@ -247,7 +242,7 @@ describe('bridge end-to-end', () => {
       });
     });
     cleanups.push(() => app.terminate());
-    await nextJson(app); // lifecycle
+    await nextJson(app);
 
     const received: string[] = [];
     app.on('message', (raw) => {
@@ -267,7 +262,7 @@ describe('bridge end-to-end', () => {
     };
     harness.emit(base);
     harness.emit({ ...base, data: { ...base.data, content: 'duplicate' } });
-    // 同一 msg_id 以另一个事件名再投递一次：仍应丢弃（first-wins）。
+
     harness.emit({ ...base, eventType: 'GROUP_AT_MESSAGE_CREATE', data: { ...base.data, content: 'at variant' } });
     harness.emit({ ...base, data: { ...base.data, id: 'RAW_DUP_2', content: 'second' } });
 

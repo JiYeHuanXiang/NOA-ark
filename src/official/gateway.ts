@@ -1,20 +1,3 @@
-/**
- * OfficialGateway — QQ 官方开放平台 WebSocket 网关客户端（自研直连）。
- *
- * 网关协议（v2，Discord 风格）：
- *   - 服务端 op 10 Hello { heartbeat_interval } → 客户端按间隔发 op 1 心跳
- *   - 客户端 op 2 Identify { token, intents, shard, properties }
- *   - 服务端 op 0 Dispatch：READY / RESUMED / 各业务事件（t, d, s）
- *   - 断线重连：session 有效时 op 6 Resume { token, session_id, seq }
- *   - op 7 Reconnect / op 9 Invalid Session 按指示范畴处理
- *
- * 关闭码分类（按官方错误码表）：
- *   - stop：4914 / 4915（机器人下架 / 封禁），停止重连；
- *   - identify：4001/4002/4004/4006/4007/4010/4011/4012/4013/4014/4900–4913，
- *     丢弃 session 后重新 Identify；
- *   - resume：其余（含 4009 连接过期），保留 session 用 Resume 恢复。
- */
-
 import type { Logger } from '../types.js';
 import { redact } from '../types.js';
 
@@ -38,30 +21,29 @@ export const CLOSE_CODES = {
 } as const;
 
 const STOP_CLOSE_CODES = new Set<number>([
-  4914, // 机器人已下架
-  4915, // 机器人已封禁
+  4914,
+  4915,
 ]);
 
 const IDENTIFY_CLOSE_CODES = new Set<number>([
-  4001, // 无效的 opcode
-  4002, // 无效的 payload
-  4004, // 鉴权失败
-  4006, // 无效的 session
-  4007, // seq 错误
-  4010, // 无效的 shard
-  4011, // 待处理消息过多
-  4012, // 无效的 version
-  4013, // 无效的 intent
-  4014, // intent 无权限
+  4001,
+  4002,
+  4004,
+  4006,
+  4007,
+  4010,
+  4011,
+  4012,
+  4013,
+  4014,
 ]);
 
 export type CloseAction = 'resume' | 'identify' | 'stop';
 
-/** 按官方关闭码表决定重连方式；4009 连接过期可继续 Resume。 */
 export function classifyCloseCode(code: number): CloseAction {
   if (STOP_CLOSE_CODES.has(code)) return 'stop';
   if (IDENTIFY_CLOSE_CODES.has(code)) return 'identify';
-  if (code >= 4900 && code <= 4913) return 'identify'; // 官方内部错误
+  if (code >= 4900 && code <= 4913) return 'identify';
   return 'resume';
 }
 
@@ -86,40 +68,35 @@ export interface GatewayOptions {
   baseUrl: string;
   tokenBaseUrl: string;
   logger: Logger;
-  /** 订阅官方业务事件。 */
+
   onEvent?: (event: OfficialEventEnvelope) => void;
-  /** 取 access_token（复用 Rest 的缓存）；不提供则自行获取。 */
+
   tokenProvider?: () => Promise<string>;
   WebSocketCtor?: WebSocketCtor;
   fetchImpl?: typeof fetch;
-  /** 断线重连的最小延迟（测试可置 0）。 */
+
   reconnectDelayMs?: number;
-  /**
-   * 显式 intents。省略时使用 DEFAULT_INTENTS（1<<25 | 1<<24），
-   * 若平台以 4013/4014 拒绝则自动回退到 1<<25 并重连。
-   */
+
   intents?: number;
 }
 
 export interface GatewayHandle {
-  /** 首次 READY / RESUMED 后 resolve；就绪前 stop 会 reject。 */
+
   ready: Promise<void>;
-  /** 连接任务结束（永不 reject）。 */
+
   done: Promise<void>;
   readonly online: boolean;
   stop(): void;
   onEvent(handler: (event: OfficialEventEnvelope) => void): void;
 }
 
-/** 默认订阅：GROUP_AND_C2C_EVENT（1<<25）+ GROUP_MEMBER（1<<24）。 */
 export const DEFAULT_INTENTS = (1 << 25) | (1 << 24);
-/** 群成员事件无权限时的回退订阅（仅群/单聊消息事件）。 */
+
 export const FALLBACK_INTENTS = 1 << 25;
 
 export function connectGateway(options: GatewayOptions): GatewayHandle {
   const { logger } = options;
   const fetchImpl = options.fetchImpl ?? fetch;
-  const now = (): number => Date.now();
   let online = false;
   let stopping = false;
   let halted = false;
@@ -130,7 +107,7 @@ export function connectGateway(options: GatewayOptions): GatewayHandle {
   let heartbeatIntervalMs = 30_000;
   const handlers = new Set<(event: OfficialEventEnvelope) => void>();
   if (options.onEvent) handlers.add(options.onEvent);
-  // 只有「未显式配置」时才允许因 4013/4014 回退，避免掩盖配置错误。
+
   const intentFallback = options.intents === undefined ? FALLBACK_INTENTS : undefined;
   let currentIntents = options.intents ?? DEFAULT_INTENTS;
 
@@ -371,7 +348,7 @@ export function connectGateway(options: GatewayOptions): GatewayHandle {
     try {
       socket.close(CLOSE_CODES.NORMAL);
     } catch {
-      // ignore
+
     }
   }
 

@@ -10,7 +10,7 @@
 # 避免 dsh 与外接 OneBot 程序同时回复。takeover.isolation 可选 auto/always/off。
 - insert:
     - id: noa-ark
-      name: 'noa-ark/dsh'
+      name: 'noa-ark'
       config:
         idMode: mapped
         passiveOverflow: fail

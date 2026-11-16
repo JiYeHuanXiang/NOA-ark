@@ -1,15 +1,3 @@
-/**
- * Quota — 主动消息的本地配额估算。
- *
- * 平台规则（2026 口径）：单关系约 20 条/分钟；每群/每好友约 1000 条/日；
- * Bot 维度未认证约 5 QPS / 30 QPM。平台不提供实时余额查询，
- * 这里只记录本进程可观察的成功发送并持久化当日计数；
- * 实际是否放行仍以平台返回码（40034105 / 40034100 等）为准。
- *
- * 每日计数按 `data/quota/<key>/daily.json` 隔离，key 通常为 appId；
- * 分钟级窗口只驻留内存，随进程重启清空。
- */
-
 import path from 'node:path';
 import { readJson, writeJsonAtomic, safeSegment } from '../store/json-store.js';
 import type { OfficialScope } from '../types.js';
@@ -23,7 +11,7 @@ export interface QuotaCheckResult {
   ok: boolean;
   reason?: QuotaReason;
   message?: string;
-  /** 建议重试等待时间；daily 场景为距离次日 0 点的毫秒数。 */
+
   retryAfterMs?: number;
 }
 
@@ -35,9 +23,9 @@ export interface QuotaLimits {
 }
 
 export interface QuotaOptions {
-  /** 数据根目录，最终文件为 `<dataDir>/quota/<key>/daily.json`。 */
+
   dataDir: string;
-  /** 隔离 key（通常为 appId）；空则用 default。 */
+
   key?: string;
   config: QuotaLimits;
   logger?: { warn(message: string): void };
@@ -72,28 +60,19 @@ export class Quota {
     this.daily = this.loadDaily();
   }
 
-  /** 当前隔离 key。 */
   get currentKey(): string {
     return this.key;
   }
 
-  /** 当日已用主动额度。 */
   dailyUsed(scope: OfficialScope, targetId: string): number {
     this.ensureToday();
     return this.daily.counts[peerKey(scope, targetId)] ?? 0;
   }
 
-  /** 当日剩余主动额度（本地估算，最小 0）。 */
   dailyRemaining(scope: OfficialScope, targetId: string): number {
     return Math.max(0, this.limits.dailyLimitPerPeer - this.dailyUsed(scope, targetId));
   }
 
-  /**
-   * 检查能否立即主动发送 count 条。
-   *
-   * 调用方必须把 check → 平台发送 → record 串行化，避免并发穿透。
-   * 每次 check 都会顺带清理一分钟以外的分钟窗口。
-   */
   check(scope: OfficialScope, targetId: string, count = 1): QuotaCheckResult {
     this.ensureToday();
     const amount = normalizeCount(count);
@@ -143,7 +122,6 @@ export class Quota {
     return { ok: true };
   }
 
-  /** 记录一条已在平台成功发出的主动消息。 */
   record(scope: OfficialScope, targetId: string, ts?: number): void {
     this.ensureToday();
     const at = ts ?? this.now();
@@ -158,9 +136,6 @@ export class Quota {
     this.save();
   }
 
-  /**
-   * 运行中换绑 AppID：切换配额目录、清空分钟窗口并重载当日计数。
-   */
   rebindKey(key: string): void {
     this.key = normalizeKey(key);
     this.file = quotaFile(this.dataDir, this.key);
@@ -212,7 +187,6 @@ export class Quota {
     }
   }
 
-  /** 清理 1 分钟前的 Bot / 单会话窗口。 */
   private prune(now: number): void {
     const cutoff = now - MINUTE_MS;
     this.botEvents = this.botEvents.filter((ts) => ts > cutoff);

@@ -2,7 +2,7 @@
 
 把 **QQ 官方机器人开放平台**（`api.bot.qq.com`，v2 WSS + REST）翻译成 **[OneBot v11](https://github.com/botuniverse/onebot-11)** 的独立适配器，让 go-cqhttp 时代的旧 OneBot 程序（NoneBot、Koishi、zerobot 插件等）可以像连接 NapCat / go-cqhttp 一样继续运行。
 
-> 状态：`0.1.0`，早期版本。只使用 QQ 官方开放平台能力；不做 QQ 客户端协议逆向、不模拟客户端登录、不碰非官方通道。平台不支持或本适配器未接线的动作会**明确失败**，不会静默成功。
+> 状态：`0.1.9`，早期版本。只使用 QQ 官方开放平台能力；不做 QQ 客户端协议逆向、不模拟客户端登录、不碰非官方通道。平台不支持或本适配器未接线的动作会**明确失败**，不会静默成功。
 
 ```
 QQ 用户
@@ -177,12 +177,12 @@ npm start
 
 ## 扩展协议 noa/1（默认关闭）
 
-标准协议覆盖不到的官方能力通过 `noa_*` 段 / 动作 / 事件提供，需在 `noa.ext.*` 显式启用。未启用时一律明确失败，不静默降级。完整协议见 **[文档](文档)**。
+标准协议覆盖不到的官方能力通过 `noa_*` 段 / 动作 / 事件提供，需在 `noa.ext.*` 显式启用。未启用时一律明确失败，不静默降级。调用方式与字段见 **[docs/USER-MANUAL.md](docs/USER-MANUAL.md)** 的扩展动作章节。
 
 - **消息段**：`noa_markdown`（`msg_type=2`）、`noa_keyboard`（内嵌按钮）、`noa_card`（`msg_type=8` 图文卡片）。
 - **事件**：`INTERACTION_CREATE` → `notice/noa_interaction`；需要 `intents` 包含 `1<<26`。
-- **动作**：P1–P6 的 `noa_send_typing`、`noa_ack_interaction`、`noa_set_menu`、`noa_set_panel` / `noa_list_panels`、`noa_set_group_add_request_policy`、`noa_stream_begin` / `append` / `end`、`noa_send_wakeup`；P7 新增菜单/面板读写、入群申请列表与审批、禁言/黑名单/群状态、素材图片、分享链接等 18 个动作（见 文档 §11）。
-- **dsh 专属**：`noa_dsh_chat` 把 QQ 输入交回 dsh AI（受 `dshChat.*` 控制，独立进程不可用；见 文档 §12）。
+- **动作**：菜单/面板读写、入群申请列表与审批、禁言/黑名单/群状态、素材图片、分享链接、流式消息、互动确认、输入状态等 29 个 `noa_*` 动作。
+- **dsh 专属**：`noa_dsh_chat` 把 QQ 输入交回 dsh AI（受 `dshChat.*` 控制，独立进程不可用）。
 - **发送侧**：`send_*` 支持可选 `event_id` 被动回复；本地富媒体 >5MB 自动分片上传。
 - `get_version_info` 会返回 `noa_ext_version: "noa/1"` 与已启用能力列表。
 
@@ -194,9 +194,9 @@ npm start
 - OneBot 动作走官方 REST，复用运行中 QQBot 的凭据；
 - 对外提供 OneBot 正向 / 反向 WS。
 
-默认 `takeover.isolation: auto`：**有 OneBot 客户端在线时，dsh-qqbot 暂停处理入站消息**（包括斜杠命令与 typing），避免 dsh 与外接 OneBot 程序同时回复；客户端全部断开后 dsh 自动恢复。
+默认 `takeover.isolation: auto`：**有 OneBot 客户端在线时，dsh-qqbot 暂停处理入站消息**（包括斜杠命令与 typing），避免 dsh 与外接 OneBot 程序同时回复；客户端全部断开后 dsh 自动恢复。`auto` 需要至少一个 OneBot 客户端保持连接；桥启动时的第一条消息可能仍由 dsh 处理。
 
-隔离生效时，QQ 消息只到外接 OneBot 程序，dsh AI 不会看到它。需要由 dsh AI 回答时，外接程序调用 `noa_dsh_chat`（`dshChat.enable=true`）拿回文本回复，再自行发送。`dshChat.restrictTools`（默认 `true`）是限制开关：开启时 AI 只能对话，任何读文件 / 写文件 / 命令 / 子代理等工具调用都会被拒绝；关闭后 AI 拥有 dsh 完整工具权限。该开关在 dsh 设置页可热切换。
+隔离生效时，QQ 消息只到外接 OneBot 程序，dsh AI 不会看到它。需要由 dsh AI 回答时，外接程序调用 `noa_dsh_chat`（`dshChat.enable=true`）拿回文本回复，再自行发送。`dshChat.restrictTools`（默认 `true`）是限制开关：开启时 AI 只能对话，任何读文件 / 写文件 / 命令 / 子代理等工具调用都会被拒绝；关闭后 AI 拥有 dsh 完整工具权限。OneBot 服务开关、回复隔离（`auto`/`always`/`off`）与 `dshChat` 开关都在「设置 → NOA 方舟」页（或「插件管理 → noa-ark → 配置」）可热切换。
 
 ```bash
 npm run build
@@ -207,7 +207,7 @@ dsh plugin --profile <profile> add link:/absolute/path/to/noa-ark
 # 重启 dsh
 ```
 
-前提是 dsh-qqbot 已在当前 profile 的 `dsh.profile.bundles` 中启用并完成 QQ 绑定。完整安装、配置、隔离语义与排障见 **[文档](文档)**。
+前提是 dsh-qqbot 已在当前 profile 的 `dsh.profile.bundles` 中启用并完成 QQ 绑定。插件页与开关说明见 **[docs/PLUGIN.zh.md](docs/PLUGIN.zh.md)** / **[docs/PLUGIN.md](docs/PLUGIN.md)**。
 
 ## 开发与测试
 
@@ -234,15 +234,14 @@ src/
   cli.ts               start / doctor
 cordis.patch.yml       dsh 组合包默认配置
 locale/                dsh 插件管理器显示元数据
-docs/                  协议映射、用户手册、noa/1、dsh 插件文档
+docs/                  用户手册与插件说明
 ```
 
 ## 文档
 
-- **[文档](文档)**：官方能力与 OneBot v11 的逐条映射、能力边界。
 - **[docs/USER-MANUAL.md](docs/USER-MANUAL.md)**：动作、事件、错误码与常见问题。
-- **[文档](文档)**：`noa/1` 扩展调用协议。
-- **[文档](文档)**：dsh 插件安装、接管与回复隔离。
+- **[docs/PLUGIN.zh.md](docs/PLUGIN.zh.md)**：dsh 插件说明（中文）。
+- **[docs/PLUGIN.md](docs/PLUGIN.md)**：dsh 插件说明（English）。
 
 ## 安全
 
@@ -256,7 +255,7 @@ docs/                  协议映射、用户手册、noa/1、dsh 插件文档
 - `noa/1` 灰度能力（菜单 / 面板 / 群管理 / 素材 / 流式）的真机验证；全员禁言端点真机确认。
 - 更多群管理接口。
 
-欢迎提交 issue / PR。修改协议映射或新增动作前，请先阅读 `文档` 的能力边界。
+欢迎提交 issue / PR。
 
 ## License
 
