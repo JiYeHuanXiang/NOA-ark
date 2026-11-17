@@ -98,6 +98,8 @@ export interface CachedMessage {
   rawMsgId: string;
   scope: OfficialScope;
   peerOpenid: string;
+
+  /** 官方原始 openid；输出时由各协议层映射，缓存伪号会导致二次映射。 */
   senderOpenid: string;
   senderName: string;
   segments: AnyOneBotSegment[];

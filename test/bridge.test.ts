@@ -231,6 +231,55 @@ describe('bridge end-to-end', () => {
     });
   });
 
+  it('keeps get_msg sender user_id stable and equal to the event user_id', async () => {
+    const harness = await setup();
+
+    const app = await new Promise<WebSocket>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('反向 WS 未连接')), 5000);
+      harness.wsServer.once('connection', (ws) => {
+        clearTimeout(timer);
+        resolve(ws);
+      });
+    });
+    cleanups.push(() => app.terminate());
+    await nextJson(app);
+
+    harness.emit({
+      eventType: 'GROUP_AT_MESSAGE_CREATE',
+      data: {
+        id: 'RAW_IN_GET_MSG',
+        group_openid: 'GROUP_A',
+        author: { user_openid: 'USER_B', username: 'Bob' },
+        content: 'hello',
+        timestamp: new Date(1_000_000).toISOString(),
+      },
+    });
+    const messageEvent = await nextJson(app, (data) => data.post_type === 'message');
+    const eventUserId = Number(messageEvent.user_id);
+
+    app.send(
+      JSON.stringify({
+        action: 'get_msg',
+        params: { message_id: messageEvent.message_id },
+        echo: 'g1',
+      }),
+    );
+    const first = await nextJson(app, (data) => data.echo === 'g1');
+    expect(first.status).toBe('ok');
+    expect((first.data as { sender: { user_id: number } }).sender.user_id).toBe(eventUserId);
+
+    app.send(
+      JSON.stringify({
+        action: 'get_msg',
+        params: { message_id: messageEvent.message_id },
+        echo: 'g2',
+      }),
+    );
+    const second = await nextJson(app, (data) => data.echo === 'g2');
+    expect(second.status).toBe('ok');
+    expect((second.data as { sender: { user_id: number } }).sender.user_id).toBe(eventUserId);
+  });
+
   it('delivers a repeated official msg_id only once', async () => {
     const harness = await setup();
 

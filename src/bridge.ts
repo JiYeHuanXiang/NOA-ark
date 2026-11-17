@@ -684,12 +684,16 @@ export async function startBridge(options: BridgeOptions): Promise<BridgeHandle>
     sender.rememberPassive(scope, peerOpenid, rawMsgId);
 
     const pseudoId = idMode === 'passthrough' ? rawMsgId : mapper.pseudoMsgOf(rawMsgId);
+
+    const senderOpenid = idMode === 'passthrough'
+      ? String(event.user_id)
+      : mapper.openidOf(String(event.user_id)) ?? '';
     cache.put(pseudoId, {
       rawMsgId,
       refIdx: extractRefIdx(data),
       scope,
       peerOpenid,
-      senderOpenid: String(event.user_id),
+      senderOpenid,
       senderName: event.sender.nickname,
       segments: event.message,
       rawMessage: event.raw_message,
